@@ -277,6 +277,34 @@ function DutyRoster() {
     notify("Додано приклад особового складу — відредагуй під свій підрозділ");
   };
 
+  /* ── експорт/імпорт усіх даних (передача між пристроями) ── */
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify({ people, posts, schedule, restDays }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `medgrafik_${ym}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  };
+
+  const importData = (file) => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const d = JSON.parse(r.result);
+        if (!d || !Array.isArray(d.people)) throw new Error("bad format");
+        if (people.length && !confirm("Замінити поточні дані даними з файлу?")) return;
+        setPeople(d.people);
+        setPosts((d.posts || DEFAULT_POSTS).map((p) => (p.req ? p : { ...p, req: { [ANY]: p.slots || 1 } })));
+        setSchedule(d.schedule || {});
+        if (d.restDays != null) setRestDays(d.restDays);
+        notify("Дані завантажено з файлу");
+      } catch (e) { notify("Не вдалося прочитати файл — це не файл даних медграфіка"); }
+    };
+    r.readAsText(file);
+  };
+
   const [y, m] = ym.split("-").map(Number);
 
   /* ───────── Рендер ───────── */
@@ -342,7 +370,7 @@ function DutyRoster() {
         {!loaded ? (
           <div className="text-center py-16" style={{ color: "#8a9070" }}>Завантаження…</div>
         ) : tab === "grid" ? (
-          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays }} />
+          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, exportData, importData }} />
         ) : tab === "people" ? (
           <PeopleTab {...{ people, setPeople, posts, loadDemo }} />
         ) : tab === "posts" ? (
@@ -364,15 +392,30 @@ function DutyRoster() {
 
 /* ───────── Вкладка: Графік ───────── */
 
-function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays }) {
+function ImportButton({ onFile, label, className, style }) {
+  const ref = useRef(null);
+  return (
+    <>
+      <input ref={ref} type="file" accept=".json,application/json" style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files[0]; if (f) onFile(f); e.target.value = ""; }} />
+      <button onClick={() => ref.current.click()} className={className} style={style}>{label}</button>
+    </>
+  );
+}
+
+function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, exportData, importData }) {
   if (!people.length) {
     return (
       <div className="text-center py-16">
         <p className="mb-1 text-lg font-semibold">Список особового складу порожній</p>
-        <p className="mb-5 text-sm" style={{ color: "#8a9070" }}>Додай людей на вкладці «Особовий склад» або почни з прикладу.</p>
-        <button onClick={loadDemo} className="px-4 py-2 rounded-lg font-medium" style={{ background: "#4a6b2f", color: "#fff" }}>
-          Додати приклад даних
-        </button>
+        <p className="mb-5 text-sm" style={{ color: "#8a9070" }}>Додай людей на вкладці «Особовий склад», завантаж збережений файл даних або почни з прикладу.</p>
+        <div className="flex justify-center gap-2">
+          <button onClick={loadDemo} className="px-4 py-2 rounded-lg font-medium" style={{ background: "#4a6b2f", color: "#fff" }}>
+            Додати приклад даних
+          </button>
+          <ImportButton onFile={importData} label="⤓ Завантажити з файлу"
+            className="px-4 py-2 rounded-lg font-medium" style={{ background: "#1d2218", color: "#c9c7ba" }} />
+        </div>
       </div>
     );
   }
@@ -418,6 +461,10 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
         </button>
         <button onClick={exportCsv} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>CSV</button>
         <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>Друк</button>
+        <button onClick={exportData} title="Зберегти всі дані у файл — для передачі чи резервної копії"
+          className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>⤒ Зберегти дані</button>
+        <ImportButton onFile={importData} label="⤓ Завантажити дані"
+          className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }} />
         <button onClick={clearMonth} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218", color: "#d08a7a" }}>Очистити</button>
       </div>
 
