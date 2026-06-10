@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Медрота — графік чергувань</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>body{margin:0;background:#10130e}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ───────── Довідники ───────── */
+
+const ROLES = ["Лікар", "Фельдшер", "Медсестра/брат", "Водій", "Санітар", "Кухар", "Інше"];
+
+const DEFAULT_POSTS = [
+  { id: "stab",   name: "Стабпункт",    short: "СТ", color: "#4a6b2f", slots: 2 },
+  { id: "amb",    name: "Амбулаторія",  short: "АМ", color: "#2f6f9f", slots: 1 },
+  { id: "travma", name: "Травмпункт",   short: "ТР", color: "#a8402f", slots: 2 },
+  { id: "stac",   name: "Стаціонар",    short: "СЦ", color: "#2e8572", slots: 2 },
+  { id: "kuhnya", name: "Кухня",        short: "КХ", color: "#a87514", slots: 1 },
+];
+
+const WD = ["Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+const MONTHS = ["Січень","Лютий","Березень","Квітень","Травень","Червень","Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"];
+
+const DEMO_PEOPLE = [
+  { name: "Коваленко О.В.", rank: "майор м/с",  role: "Лікар",          posts: ["stab","travma","stac"] },
+  { name: "Шевченко І.М.",  rank: "капітан м/с", role: "Лікар",          posts: ["amb","stac"] },
+  { name: "Бондаренко Т.С.",rank: "ст. лейтенант м/с", role: "Лікар",   posts: ["travma","stab"] },
+  { name: "Мельник В.П.",   rank: "ст. сержант", role: "Фельдшер",       posts: ["stab","travma","amb"] },
+  { name: "Ткаченко Д.О.",  rank: "сержант",     role: "Фельдшер",       posts: ["stab","stac"] },
+  { name: "Кравченко Ю.А.", rank: "солдат",      role: "Фельдшер",       posts: ["amb","travma"] },
+  { name: "Олійник Н.І.",   rank: "сержант",     role: "Медсестра/брат", posts: ["stac"] },
+  { name: "Поліщук С.В.",   rank: "солдат",      role: "Медсестра/брат", posts: ["stac","amb"] },
+  { name: "Лисенко А.Р.",   rank: "ст. солдат",  role: "Водій",          posts: ["stab","travma"] },
+  { name: "Савченко М.М.",  rank: "солдат",      role: "Водій",          posts: ["stab"] },
+  { name: "Руденко П.Г.",   rank: "солдат",      role: "Санітар",        posts: ["stac","travma"] },
+  { name: "Марченко К.Л.",  rank: "солдат",      role: "Санітар",        posts: ["stac","stab"] },
+  { name: "Гриценко В.Д.",  rank: "солдат",      role: "Кухар",          posts: ["kuhnya"] },
+  { name: "Захарченко О.О.",rank: "солдат",      role: "Кухар",          posts: ["kuhnya"] },
+];
+
+/* ───────── Утиліти ───────── */
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const pad2 = (n) => String(n).padStart(2, "0");
+const ymOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+const daysIn = (ym) => { const [y, m] = ym.split("-").map(Number); return new Date(y, m, 0).getDate(); };
+const wdOf = (ym, day) => { const [y, m] = ym.split("-").map(Number); return new Date(y, m - 1, day).getDay(); };
+const shiftYm = (ym, k) => { const [y, m] = ym.split("-").map(Number); const d = new Date(y, m - 1 + k, 1); return ymOf(d); };
+
+const STORAGE_KEY = "medrota-duty-v1";
+
+/* ───────── Головний компонент ───────── */
+
+function DutyRoster() {
+  const today = new Date();
+  const [tab, setTab] = useState("grid");
+  const [ym, setYm] = useState(ymOf(today));
+  const [people, setPeople] = useState([]);
+  const [posts, setPosts] = useState(DEFAULT_POSTS);
+  const [schedule, setSchedule] = useState({}); // {ym: {personId: {day: postId}}}
+  const [restDays, setRestDays] = useState(2);
+  const [tool, setTool] = useState(DEFAULT_POSTS[0].id); // обраний пост або "erase"
+  const [loaded, setLoaded] = useState(false);
+  const [toast, setToast] = useState(null);
+  const saveTimer = useRef(null);
+
+  /* завантаження */
+  useEffect(() => {
+    try {
+      const r = localStorage.getItem(STORAGE_KEY);
+      if (r) {
+        const d = JSON.parse(r);
+        if (d.people) setPeople(d.people);
+        if (d.posts) setPosts(d.posts);
+        if (d.schedule) setSchedule(d.schedule);
+        if (d.restDays != null) setRestDays(d.restDays);
+      }
+    } catch (e) { /* перший запуск — даних ще немає */ }
+    setLoaded(true);
+  }, []);
+
+  /* збереження з затримкою */
+  useEffect(() => {
+    if (!loaded) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ people, posts, schedule, restDays }));
+      } catch (e) { console.error("Не вдалося зберегти", e); }
+    }, 600);
+    return () => clearTimeout(saveTimer.current);
+  }, [people, posts, schedule, restDays, loaded]);
+
+  const notify = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); };
+
+  const days = daysIn(ym);
+  const monthSched = schedule[ym] || {};
+  const postById = useMemo(() => Object.fromEntries(posts.map((p) => [p.id, p])), [posts]);
+
+  const isToday = (day) => {
+    const t = new Date();
+    return ymOf(t) === ym && t.getDate() === day;
+  };
+
+  /* ── редагування клітинки ── */
+  const setCell = (personId, day, postId) => {
+    setSchedule((prev) => {
+      const m = { ...(prev[ym] || {}) };
+      const row = { ...(m[personId] || {}) };
+      if (postId === null || row[day] === postId) delete row[day];
+      else row[day] = postId;
+      m[personId] = row;
+      return { ...prev, [ym]: m };
+    });
+  };
+
+  const cellClick = (personId, day) => {
+    if (tool === "erase") setCell(personId, day, null);
+    else setCell(personId, day, tool);
+  };
+
+  /* ── перевірки ── */
+  const hasDuty = (sched, personId, day) => !!(sched[personId] && sched[personId][day]);
+
+  const restConflict = (sched, personId, day) => {
+    for (let k = 1; k <= restDays; k++) {
+      if (day - k >= 1 && hasDuty(sched, personId, day - k)) return true;
+      if (day + k <= days && hasDuty(sched, personId, day + k)) return true;
+    }
+    return false;
+  };
+
+  const coverage = useMemo(() => {
+    // {postId: {day: count}}
+    const cov = {};
+    posts.forEach((p) => { cov[p.id] = {}; for (let d = 1; d <= days; d++) cov[p.id][d] = 0; });
+    Object.values(monthSched).forEach((row) =>
+      Object.entries(row).forEach(([d, pid]) => { if (cov[pid]) cov[pid][d] = (cov[pid][d] || 0) + 1; })
+    );
+    return cov;
+  }, [monthSched, posts, days]);
+
+  const dutyCount = (personId) => Object.keys(monthSched[personId] || {}).length;
+
+  /* ── авторозподіл ── */
+  const autoFill = () => {
+    const sched = {};
+    Object.entries(monthSched).forEach(([pid, row]) => { sched[pid] = { ...row }; });
+    const counts = {};
+    people.forEach((p) => { counts[p.id] = Object.keys(sched[p.id] || {}).length; });
+    let unfilled = 0;
+
+    posts.forEach((post) => {
+      for (let day = 1; day <= days; day++) {
+        let assigned = people.filter((p) => sched[p.id] && sched[p.id][day] === post.id).length;
+        while (assigned < post.slots) {
+          const cands = people
+            .filter((p) => p.active !== false && p.posts.includes(post.id))
+            .filter((p) => !hasDuty(sched, p.id, day))
+            .filter((p) => !restConflict(sched, p.id, day))
+            .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
+          if (!cands.length) { unfilled++; break; }
+          const pick = cands[0];
+          if (!sched[pick.id]) sched[pick.id] = {};
+          sched[pick.id][day] = post.id;
+          counts[pick.id]++;
+          assigned++;
+        }
+      }
+    });
+
+    setSchedule((prev) => ({ ...prev, [ym]: sched }));
+    notify(unfilled ? `Готово, але ${unfilled} змін не закрито — бракує людей` : "Графік заповнено");
+  };
+
+  const clearMonth = () => {
+    if (!confirm("Очистити всі чергування за цей місяць?")) return;
+    setSchedule((prev) => ({ ...prev, [ym]: {} }));
+  };
+
+  /* ── експорт CSV ── */
+  const exportCsv = () => {
+    const head = ["ПІБ", "Звання", "Категорія", ...Array.from({ length: days }, (_, i) => i + 1), "Всього"];
+    const lines = [head.join(";")];
+    ROLES.forEach((role) => {
+      people.filter((p) => p.role === role).forEach((p) => {
+        const row = [p.name, p.rank || "", p.role];
+        for (let d = 1; d <= days; d++) {
+          const pid = (monthSched[p.id] || {})[d];
+          row.push(pid ? (postById[pid]?.short || pid) : "");
+        }
+        row.push(dutyCount(p.id));
+        lines.push(row.join(";"));
+      });
+    });
+    lines.push("");
+    lines.push("Умовні позначення:;" + posts.map((p) => `${p.short} — ${p.name}`).join("; "));
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    const [y, m] = ym.split("-");
+    a.download = `график_чергувань_${m}_${y}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const loadDemo = () => {
+    setPeople(DEMO_PEOPLE.map((p) => ({ ...p, id: uid(), active: true })));
+    notify("Додано приклад особового складу — відредагуй під свій підрозділ");
+  };
+
+  const [y, m] = ym.split("-").map(Number);
+
+  /* ───────── Рендер ───────── */
+  return (
+    <div className="min-h-screen" style={{ background: "#10130e", color: "#e8e6dd", fontFamily: "system-ui, sans-serif" }}>
+      <style>{`
+        @media print {
+          .no-print { display: none !important; }
+          body, .print-root { background: #fff !important; color: #000 !important; }
+          .grid-wrap { overflow: visible !important; max-height: none !important; }
+        }
+        .cell:hover { outline: 2px solid #e8e6dd55; outline-offset: -2px; }
+        ::-webkit-scrollbar { height: 10px; width: 10px; }
+        ::-webkit-scrollbar-thumb { background: #3a4032; border-radius: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+      `}</style>
+
+      {/* Шапка */}
+      <header className="px-4 pt-4 pb-3 no-print" style={{ borderBottom: "1px solid #2a2f24" }}>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <div className="text-xs tracking-widest" style={{ color: "#8a9070" }}>МЕДИЧНА РОТА · ГРАФІК ЧЕРГУВАНЬ</div>
+            <div className="flex items-center gap-3 mt-1">
+              <button onClick={() => setYm(shiftYm(ym, -1))} className="px-2 py-1 rounded" style={{ background: "#1d2218" }}>‹</button>
+              <h1 className="text-xl font-bold" style={{ minWidth: "11rem", textAlign: "center" }}>{MONTHS[m - 1]} {y}</h1>
+              <button onClick={() => setYm(shiftYm(ym, 1))} className="px-2 py-1 rounded" style={{ background: "#1d2218" }}>›</button>
+            </div>
+          </div>
+          <nav className="flex gap-1">
+            {[["grid", "Графік"], ["people", "Особовий склад"], ["posts", "Пости"], ["summary", "Підсумки"]].map(([id, label]) => (
+              <button key={id} onClick={() => setTab(id)}
+                className="px-3 py-2 rounded-lg text-sm font-medium"
+                style={tab === id ? { background: "#e8e6dd", color: "#10130e" } : { background: "#1d2218", color: "#c9c7ba" }}>
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </header>
+
+      <main className="p-4 print-root">
+        {!loaded ? (
+          <div className="text-center py-16" style={{ color: "#8a9070" }}>Завантаження…</div>
+        ) : tab === "grid" ? (
+          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays }} />
+        ) : tab === "people" ? (
+          <PeopleTab {...{ people, setPeople, posts, loadDemo }} />
+        ) : tab === "posts" ? (
+          <PostsTab {...{ posts, setPosts }} />
+        ) : (
+          <SummaryTab {...{ people, posts, monthSched, coverage, days, dutyCount, ym }} />
+        )}
+      </main>
+
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-sm no-print"
+          style={{ background: "#e8e6dd", color: "#10130e", boxShadow: "0 4px 20px #0008" }}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ───────── Вкладка: Графік ───────── */
+
+function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays }) {
+  if (!people.length) {
+    return (
+      <div className="text-center py-16">
+        <p className="mb-1 text-lg font-semibold">Список особового складу порожній</p>
+        <p className="mb-5 text-sm" style={{ color: "#8a9070" }}>Додай людей на вкладці «Особовий склад» або почни з прикладу.</p>
+        <button onClick={loadDemo} className="px-4 py-2 rounded-lg font-medium" style={{ background: "#4a6b2f", color: "#fff" }}>
+          Додати приклад даних
+        </button>
+      </div>
+    );
+  }
+
+  const sched = monthSched;
+
+  return (
+    <div>
+      {/* Панель інструментів */}
+      <div className="flex flex-wrap items-center gap-2 mb-3 no-print">
+        <span className="text-xs uppercase tracking-wider mr-1" style={{ color: "#8a9070" }}>Постав на:</span>
+        {posts.map((p) => (
+          <button key={p.id} onClick={() => setTool(p.id)}
+            className="px-3 py-1.5 rounded-lg text-sm font-semibold"
+            style={{
+              background: tool === p.id ? p.color : "#1d2218",
+              color: tool === p.id ? "#fff" : "#c9c7ba",
+              border: `1px solid ${p.color}`,
+            }}>
+            {p.short} · {p.name}
+          </button>
+        ))}
+        <button onClick={() => setTool("erase")}
+          className="px-3 py-1.5 rounded-lg text-sm font-semibold"
+          style={{ background: tool === "erase" ? "#e8e6dd" : "#1d2218", color: tool === "erase" ? "#10130e" : "#c9c7ba", border: "1px solid #555" }}>
+          ✕ Стерти
+        </button>
+        <div className="grow" />
+        <label className="text-xs flex items-center gap-1" style={{ color: "#8a9070" }}>
+          Відпочинок між нарядами:
+          <select value={restDays} onChange={(e) => setRestDays(Number(e.target.value))}
+            className="rounded px-1 py-0.5" style={{ background: "#1d2218", color: "#e8e6dd" }}>
+            {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n} дн.</option>)}
+          </select>
+        </label>
+        <button onClick={autoFill} className="px-3 py-1.5 rounded-lg text-sm font-semibold" style={{ background: "#4a6b2f", color: "#fff" }}>
+          ⚙ Авторозподіл
+        </button>
+        <button onClick={exportCsv} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>CSV</button>
+        <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>Друк</button>
+        <button onClick={clearMonth} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218", color: "#d08a7a" }}>Очистити</button>
+      </div>
+
+      <p className="text-xs mb-2 no-print" style={{ color: "#8a9070" }}>
+        Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Помаранчева рамка — порушено відпочинок між нарядами.
+      </p>
+
+      {/* Сітка */}
+      <div className="grid-wrap overflow-auto rounded-lg" style={{ border: "1px solid #2a2f24", maxHeight: "72vh" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: "12px" }}>
+          <thead>
+            <tr style={{ position: "sticky", top: 0, zIndex: 3, background: "#171b13" }}>
+              <th className="px-2 py-1 text-left" style={{ position: "sticky", left: 0, background: "#171b13", minWidth: "13rem", zIndex: 4 }}>ПІБ / звання</th>
+              {Array.from({ length: days }, (_, i) => i + 1).map((d) => {
+                const w = wdOf(ym, d);
+                const weekend = w === 0 || w === 6;
+                return (
+                  <th key={d} className="px-0.5 py-1 text-center" style={{
+                    minWidth: "2rem",
+                    color: weekend ? "#d0a060" : "#c9c7ba",
+                    background: isToday(d) ? "#3a4032" : undefined,
+                  }}>
+                    <div>{d}</div>
+                    <div style={{ fontSize: "9px", color: weekend ? "#d0a060" : "#777d68" }}>{WD[w]}</div>
+                  </th>
+                );
+              })}
+              <th className="px-2 py-1" style={{ minWidth: "3rem" }}>Σ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ROLES.map((role) => {
+              const group = people.filter((p) => p.role === role && p.active !== false);
+              if (!group.length) return null;
+              return [
+                <tr key={role + "-h"}>
+                  <td colSpan={days + 2} className="px-2 py-1 text-xs font-bold uppercase tracking-wider"
+                    style={{ background: "#1d2218", color: "#8a9070", position: "sticky", left: 0 }}>
+                    {role} — {group.length}
+                  </td>
+                </tr>,
+                ...group.map((p) => (
+                  <tr key={p.id} style={{ borderTop: "1px solid #22271d" }}>
+                    <td className="px-2 py-1 whitespace-nowrap" style={{ position: "sticky", left: 0, background: "#10130e", zIndex: 2 }}>
+                      <div className="font-medium">{p.name}</div>
+                      <div style={{ fontSize: "10px", color: "#777d68" }}>{p.rank}</div>
+                    </td>
+                    {Array.from({ length: days }, (_, i) => i + 1).map((d) => {
+                      const pid = (sched[p.id] || {})[d];
+                      const post = pid ? postById[pid] : null;
+                      const conflict = pid && restConflict(sched, p.id, d);
+                      const w = wdOf(ym, d);
+                      const weekend = w === 0 || w === 6;
+                      return (
+                        <td key={d} onClick={() => cellClick(p.id, d)}
+                          className="cell text-center cursor-pointer select-none"
+                          title={post ? `${post.name}${conflict ? " — порушено відпочинок" : ""}` : ""}
+                          style={{
+                            background: post ? post.color : weekend ? "#161a12" : "transparent",
+                            color: "#fff",
+                            fontWeight: 700,
+                            fontSize: "10px",
+                            height: "26px",
+                            boxShadow: conflict ? "inset 0 0 0 2px #ff9933" : undefined,
+                            borderLeft: "1px solid #1c2017",
+                          }}>
+                          {post ? post.short : ""}
+                        </td>
+                      );
+                    })}
+                    <td className="text-center font-bold" style={{ color: "#c9c7ba" }}>{dutyCount(p.id) || ""}</td>
+                  </tr>
+                )),
+              ];
+            })}
+
+            {/* Покриття постів */}
+            <tr><td colSpan={days + 2} className="px-2 py-1 text-xs font-bold uppercase tracking-wider"
+              style={{ background: "#1d2218", color: "#8a9070", position: "sticky", left: 0 }}>Покриття постів (є / треба)</td></tr>
+            {posts.map((post) => (
+              <tr key={"cov-" + post.id} style={{ borderTop: "1px solid #22271d" }}>
+                <td className="px-2 py-1 whitespace-nowrap font-medium" style={{ position: "sticky", left: 0, background: "#10130e", zIndex: 2 }}>
+                  <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5" style={{ background: post.color }} />
+                  {post.name}
+                </td>
+                {Array.from({ length: days }, (_, i) => i + 1).map((d) => {
+                  const have = coverage[post.id]?.[d] || 0;
+                  const ok = have >= post.slots;
+                  return (
+                    <td key={d} className="text-center" style={{
+                      fontSize: "10px",
+                      height: "22px",
+                      color: ok ? "#7fa86a" : "#ff7a5c",
+                      fontWeight: ok ? 400 : 700,
+                      background: ok ? "transparent" : "#3a1c14",
+                      borderLeft: "1px solid #1c2017",
+                    }}>
+                      {have}/{post.slots}
+                    </td>
+                  );
+                })}
+                <td />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ───────── Вкладка: Особовий склад ───────── */
+
+function PeopleTab({ people, setPeople, posts, loadDemo }) {
+  const [form, setForm] = useState({ name: "", rank: "", role: ROLES[0], posts: [] });
+
+  const togglePost = (arr, id) => arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id];
+
+  const add = () => {
+    if (!form.name.trim()) return;
+    setPeople((prev) => [...prev, { ...form, name: form.name.trim(), id: uid(), active: true }]);
+    setForm({ name: "", rank: "", role: form.role, posts: form.posts });
+  };
+
+  const update = (id, patch) => setPeople((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const remove = (id) => { if (confirm("Видалити з усіх графіків?")) setPeople((prev) => prev.filter((p) => p.id !== id)); };
+
+  return (
+    <div className="max-w-4xl">
+      {/* Форма */}
+      <div className="rounded-lg p-3 mb-4 flex flex-wrap gap-2 items-end" style={{ background: "#171b13", border: "1px solid #2a2f24" }}>
+        <label className="text-xs" style={{ color: "#8a9070" }}>ПІБ
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+            onKeyDown={(e) => e.key === "Enter" && add()}
+            placeholder="Прізвище І.Б." className="block mt-1 px-2 py-1.5 rounded w-44"
+            style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
+        </label>
+        <label className="text-xs" style={{ color: "#8a9070" }}>Звання
+          <input value={form.rank} onChange={(e) => setForm({ ...form, rank: e.target.value })}
+            placeholder="сержант" className="block mt-1 px-2 py-1.5 rounded w-32"
+            style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
+        </label>
+        <label className="text-xs" style={{ color: "#8a9070" }}>Категорія
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}
+            className="block mt-1 px-2 py-1.5 rounded" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }}>
+            {ROLES.map((r) => <option key={r}>{r}</option>)}
+          </select>
+        </label>
+        <div className="text-xs" style={{ color: "#8a9070" }}>Допущений до постів
+          <div className="flex gap-1 mt-1 flex-wrap">
+            {posts.map((p) => (
+              <button key={p.id} onClick={() => setForm({ ...form, posts: togglePost(form.posts, p.id) })}
+                className="px-2 py-1 rounded text-xs font-semibold"
+                style={{
+                  background: form.posts.includes(p.id) ? p.color : "#10130e",
+                  color: form.posts.includes(p.id) ? "#fff" : "#777d68",
+                  border: `1px solid ${form.posts.includes(p.id) ? p.color : "#2a2f24"}`,
+                }}>
+                {p.short}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button onClick={add} className="px-4 py-1.5 rounded-lg font-semibold" style={{ background: "#4a6b2f", color: "#fff" }}>+ Додати</button>
+        {!people.length && (
+          <button onClick={loadDemo} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>Приклад даних</button>
+        )}
+      </div>
+
+      {/* Список */}
+      {ROLES.map((role) => {
+        const group = people.filter((p) => p.role === role);
+        if (!group.length) return null;
+        return (
+          <div key={role} className="mb-4">
+            <div className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: "#8a9070" }}>{role} — {group.length}</div>
+            {group.map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg mb-1"
+                style={{ background: "#171b13", border: "1px solid #2a2f24", opacity: p.active === false ? 0.45 : 1 }}>
+                <input value={p.name} onChange={(e) => update(p.id, { name: e.target.value })}
+                  className="px-2 py-1 rounded w-44 font-medium" style={{ background: "transparent", border: "1px solid transparent", color: "#e8e6dd" }} />
+                <input value={p.rank || ""} onChange={(e) => update(p.id, { rank: e.target.value })}
+                  placeholder="звання" className="px-2 py-1 rounded w-32 text-sm" style={{ background: "transparent", border: "1px solid transparent", color: "#8a9070" }} />
+                <select value={p.role} onChange={(e) => update(p.id, { role: e.target.value })}
+                  className="px-2 py-1 rounded text-sm" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }}>
+                  {ROLES.map((r) => <option key={r}>{r}</option>)}
+                </select>
+                <div className="flex gap-1">
+                  {posts.map((post) => (
+                    <button key={post.id} onClick={() => update(p.id, { posts: togglePost(p.posts, post.id) })}
+                      title={post.name}
+                      className="px-2 py-1 rounded text-xs font-semibold"
+                      style={{
+                        background: p.posts.includes(post.id) ? post.color : "#10130e",
+                        color: p.posts.includes(post.id) ? "#fff" : "#555c4a",
+                        border: `1px solid ${p.posts.includes(post.id) ? post.color : "#2a2f24"}`,
+                      }}>
+                      {post.short}
+                    </button>
+                  ))}
+                </div>
+                <div className="grow" />
+                <button onClick={() => update(p.id, { active: p.active === false ? true : false })}
+                  className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#c9c7ba" }}>
+                  {p.active === false ? "Повернути" : "Відпустка/ВЛК"}
+                </button>
+                <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      {people.length > 0 && (
+        <p className="text-xs" style={{ color: "#777d68" }}>
+          «Відпустка/ВЛК» тимчасово виключає людину з графіка та авторозподілу, не видаляючи її.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ───────── Вкладка: Пости ───────── */
+
+function PostsTab({ posts, setPosts }) {
+  const COLORS = ["#4a6b2f", "#2f6f9f", "#a8402f", "#2e8572", "#a87514", "#6b4a8a", "#8a6b2f", "#4a8a8a"];
+  const update = (id, patch) => setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const add = () => setPosts((prev) => [...prev, { id: uid(), name: "Новий пост", short: "НП", color: COLORS[prev.length % COLORS.length], slots: 1 }]);
+  const remove = (id) => { if (confirm("Видалити пост? Призначення на нього зникнуть з відображення.")) setPosts((prev) => prev.filter((p) => p.id !== id)); };
+
+  return (
+    <div className="max-w-2xl">
+      <p className="text-sm mb-3" style={{ color: "#8a9070" }}>
+        «Осіб на добу» — скільки людей має бути на посту щодня. Це використовує авторозподіл і контроль покриття.
+      </p>
+      {posts.map((p) => (
+        <div key={p.id} className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg mb-1"
+          style={{ background: "#171b13", border: "1px solid #2a2f24" }}>
+          <input value={p.name} onChange={(e) => update(p.id, { name: e.target.value })}
+            className="px-2 py-1 rounded w-44 font-medium" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
+          <label className="text-xs" style={{ color: "#8a9070" }}>Код
+            <input value={p.short} maxLength={3} onChange={(e) => update(p.id, { short: e.target.value.toUpperCase() })}
+              className="ml-1 px-2 py-1 rounded w-14 text-center font-bold" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
+          </label>
+          <label className="text-xs" style={{ color: "#8a9070" }}>Осіб на добу
+            <input type="number" min={1} max={9} value={p.slots}
+              onChange={(e) => update(p.id, { slots: Math.max(1, Number(e.target.value) || 1) })}
+              className="ml-1 px-2 py-1 rounded w-14 text-center" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
+          </label>
+          <div className="flex gap-1">
+            {COLORS.map((c) => (
+              <button key={c} onClick={() => update(p.id, { color: c })}
+                className="w-6 h-6 rounded"
+                style={{ background: c, outline: p.color === c ? "2px solid #e8e6dd" : "none", outlineOffset: "1px" }} />
+            ))}
+          </div>
+          <div className="grow" />
+          <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
+        </div>
+      ))}
+      <button onClick={add} className="mt-2 px-4 py-1.5 rounded-lg font-semibold" style={{ background: "#4a6b2f", color: "#fff" }}>+ Додати пост</button>
+    </div>
+  );
+}
+
+/* ───────── Вкладка: Підсумки ───────── */
+
+function SummaryTab({ people, posts, monthSched, coverage, days, dutyCount, ym }) {
+  const byPost = (personId) => {
+    const res = {};
+    Object.values(monthSched[personId] || {}).forEach((pid) => { res[pid] = (res[pid] || 0) + 1; });
+    return res;
+  };
+
+  const gaps = posts.map((post) => {
+    const bad = [];
+    for (let d = 1; d <= days; d++) if ((coverage[post.id]?.[d] || 0) < post.slots) bad.push(d);
+    return { post, bad };
+  }).filter((g) => g.bad.length);
+
+  const active = people.filter((p) => p.active !== false);
+  const counts = active.map((p) => dutyCount(p.id));
+  const max = Math.max(1, ...counts);
+
+  return (
+    <div className="max-w-3xl">
+      {/* Незакриті зміни */}
+      <h2 className="font-bold mb-2">Незакриті зміни</h2>
+      {!gaps.length ? (
+        <p className="text-sm mb-5" style={{ color: "#7fa86a" }}>✓ Усі пости закриті щодня.</p>
+      ) : (
+        <div className="mb-5">
+          {gaps.map(({ post, bad }) => (
+            <div key={post.id} className="px-3 py-2 rounded-lg mb-1 text-sm" style={{ background: "#3a1c14", border: "1px solid #5a2c20" }}>
+              <span className="font-semibold" style={{ color: "#ff9a7c" }}>{post.name}:</span>{" "}
+              не вистачає людей у дні: {bad.join(", ")}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Навантаження */}
+      <h2 className="font-bold mb-2">Навантаження за місяць</h2>
+      <div className="rounded-lg p-3" style={{ background: "#171b13", border: "1px solid #2a2f24" }}>
+        {ROLES.map((role) => {
+          const group = active.filter((p) => p.role === role);
+          if (!group.length) return null;
+          return (
+            <div key={role} className="mb-3">
+              <div className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: "#8a9070" }}>{role}</div>
+              {group.sort((a, b) => dutyCount(b.id) - dutyCount(a.id)).map((p) => {
+                const n = dutyCount(p.id);
+                const parts = byPost(p.id);
+                return (
+                  <div key={p.id} className="flex items-center gap-2 mb-1 text-sm">
+                    <div className="w-40 truncate">{p.name}</div>
+                    <div className="grow h-4 rounded overflow-hidden flex" style={{ background: "#10130e" }}>
+                      {posts.map((post) => {
+                        const k = parts[post.id] || 0;
+                        if (!k) return null;
+                        return <div key={post.id} title={`${post.name}: ${k}`} style={{ width: `${(k / max) * 100}%`, background: post.color }} />;
+                      })}
+                    </div>
+                    <div className="w-8 text-right font-bold">{n}</div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+        <div className="flex flex-wrap gap-3 mt-2 pt-2 text-xs" style={{ borderTop: "1px solid #2a2f24", color: "#8a9070" }}>
+          {posts.map((p) => (
+            <span key={p.id}><span className="inline-block w-2.5 h-2.5 rounded-sm mr-1" style={{ background: p.color }} />{p.name}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<DutyRoster />);
+
+</script>
+</body>
+</html>
