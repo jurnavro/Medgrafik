@@ -19,12 +19,14 @@ const { useState, useEffect, useMemo, useRef } = React;
 
 const ROLES = ["Лікар", "Фельдшер", "Медсестра/брат", "Водій", "Санітар", "Кухар", "Інше"];
 
+const ANY = "any"; // місце без вимоги до категорії
+
 const DEFAULT_POSTS = [
-  { id: "stab",   name: "Стабпункт",    short: "СТ", color: "#4a6b2f", slots: 2 },
-  { id: "amb",    name: "Амбулаторія",  short: "АМ", color: "#2f6f9f", slots: 1 },
-  { id: "travma", name: "Травмпункт",   short: "ТР", color: "#a8402f", slots: 2 },
-  { id: "stac",   name: "Стаціонар",    short: "СЦ", color: "#2e8572", slots: 2 },
-  { id: "kuhnya", name: "Кухня",        short: "КХ", color: "#a87514", slots: 1 },
+  { id: "stab",   name: "Стабпункт",    short: "СТ", color: "#4a6b2f", req: { [ANY]: 2 } },
+  { id: "amb",    name: "Амбулаторія",  short: "АМ", color: "#2f6f9f", req: { [ANY]: 1 } },
+  { id: "travma", name: "Травмпункт",   short: "ТР", color: "#a8402f", req: { "Лікар": 1, "Фельдшер": 1, "Санітар": 1 } },
+  { id: "stac",   name: "Стаціонар",    short: "СЦ", color: "#2e8572", req: { [ANY]: 2 } },
+  { id: "kuhnya", name: "Кухня",        short: "КХ", color: "#a87514", req: { "Кухар": 1 } },
 ];
 
 const WD = ["Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
@@ -42,7 +44,7 @@ const DEMO_PEOPLE = [
   { name: "Лисенко А.Р.",   rank: "ст. солдат",  role: "Водій",          posts: ["stab","travma"] },
   { name: "Савченко М.М.",  rank: "солдат",      role: "Водій",          posts: ["stab"] },
   { name: "Руденко П.Г.",   rank: "солдат",      role: "Санітар",        posts: ["stac","travma"] },
-  { name: "Марченко К.Л.",  rank: "солдат",      role: "Санітар",        posts: ["stac","stab"] },
+  { name: "Марченко К.Л.",  rank: "солдат",      role: "Санітар",        posts: ["stac","stab","travma"] },
   { name: "Гриценко В.Д.",  rank: "солдат",      role: "Кухар",          posts: ["kuhnya"] },
   { name: "Захарченко О.О.",rank: "солдат",      role: "Кухар",          posts: ["kuhnya"] },
 ];
@@ -55,6 +57,28 @@ const ymOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 const daysIn = (ym) => { const [y, m] = ym.split("-").map(Number); return new Date(y, m, 0).getDate(); };
 const wdOf = (ym, day) => { const [y, m] = ym.split("-").map(Number); return new Date(y, m - 1, day).getDay(); };
 const shiftYm = (ym, k) => { const [y, m] = ym.split("-").map(Number); const d = new Date(y, m - 1 + k, 1); return ymOf(d); };
+
+/* вимоги поста: {категорія|any: кількість}; старі дані мали лише slots */
+const normReq = (post) => (post.req && typeof post.req === "object" ? post.req : { [ANY]: post.slots || 1 });
+const totalReq = (post) => Object.values(normReq(post)).reduce((s, n) => s + (Number(n) || 0), 0);
+const reqLabel = (key) => (key === ANY ? "Будь-хто" : key);
+const reqText = (post) =>
+  Object.entries(normReq(post)).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${reqLabel(k)}`).join(" · ");
+
+/* скільки і кого бракує на посту в конкретний день */
+const evalCoverage = (post, assigned) => {
+  const left = { ...normReq(post) };
+  let extra = 0;
+  assigned.forEach((p) => {
+    if (left[p.role] > 0) left[p.role]--;
+    else extra++; // зайві за категорією йдуть у місця «будь-хто»
+  });
+  const anyShort = Math.max(0, (left[ANY] || 0) - extra);
+  const missing = [];
+  ROLES.forEach((r) => { if (left[r] > 0) missing.push(`${left[r]} ${r}`); });
+  if (anyShort > 0) missing.push(`${anyShort} будь-хто`);
+  return { have: assigned.length, need: totalReq(post), missing };
+};
 
 const STORAGE_KEY = "medrota-duty-v1";
 
@@ -80,7 +104,7 @@ function DutyRoster() {
       if (r) {
         const d = JSON.parse(r);
         if (d.people) setPeople(d.people);
-        if (d.posts) setPosts(d.posts);
+        if (d.posts) setPosts(d.posts.map((p) => (p.req ? p : { ...p, req: { [ANY]: p.slots || 1 } })));
         if (d.schedule) setSchedule(d.schedule);
         if (d.restDays != null) setRestDays(d.restDays);
       }
@@ -140,14 +164,22 @@ function DutyRoster() {
   };
 
   const coverage = useMemo(() => {
-    // {postId: {day: count}}
+    // {postId: {day: {have, need, missing}}}
+    const byDay = {}; // {postId: {day: [people]}}
+    posts.forEach((p) => { byDay[p.id] = {}; });
+    people.forEach((p) => {
+      const row = monthSched[p.id] || {};
+      Object.entries(row).forEach(([d, pid]) => {
+        if (byDay[pid]) (byDay[pid][d] = byDay[pid][d] || []).push(p);
+      });
+    });
     const cov = {};
-    posts.forEach((p) => { cov[p.id] = {}; for (let d = 1; d <= days; d++) cov[p.id][d] = 0; });
-    Object.values(monthSched).forEach((row) =>
-      Object.entries(row).forEach(([d, pid]) => { if (cov[pid]) cov[pid][d] = (cov[pid][d] || 0) + 1; })
-    );
+    posts.forEach((post) => {
+      cov[post.id] = {};
+      for (let d = 1; d <= days; d++) cov[post.id][d] = evalCoverage(post, byDay[post.id][d] || []);
+    });
     return cov;
-  }, [monthSched, posts, days]);
+  }, [monthSched, posts, people, days]);
 
   const dutyCount = (personId) => Object.keys(monthSched[personId] || {}).length;
 
@@ -159,22 +191,49 @@ function DutyRoster() {
     people.forEach((p) => { counts[p.id] = Object.keys(sched[p.id] || {}).length; });
     let unfilled = 0;
 
+    const pickFor = (post, day, role) => {
+      const cands = people
+        .filter((p) => p.active !== false && p.posts.includes(post.id))
+        .filter((p) => !role || p.role === role)
+        .filter((p) => !hasDuty(sched, p.id, day))
+        .filter((p) => !restConflict(sched, p.id, day))
+        .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
+      if (!cands.length) return false;
+      const pick = cands[0];
+      if (!sched[pick.id]) sched[pick.id] = {};
+      sched[pick.id][day] = post.id;
+      counts[pick.id]++;
+      return true;
+    };
+
+    // скільки ще треба з урахуванням уже проставленого
+    const leftFor = (post, day) => {
+      const left = { ...normReq(post) };
+      let extra = 0;
+      people.forEach((p) => {
+        if (sched[p.id] && sched[p.id][day] === post.id) {
+          if (left[p.role] > 0) left[p.role]--;
+          else extra++;
+        }
+      });
+      left[ANY] = Math.max(0, (left[ANY] || 0) - extra);
+      return left;
+    };
+
+    // пас 1: місця з вимогою категорії — фахівці дефіцитніші, їх ставимо першими
     posts.forEach((post) => {
       for (let day = 1; day <= days; day++) {
-        let assigned = people.filter((p) => sched[p.id] && sched[p.id][day] === post.id).length;
-        while (assigned < post.slots) {
-          const cands = people
-            .filter((p) => p.active !== false && p.posts.includes(post.id))
-            .filter((p) => !hasDuty(sched, p.id, day))
-            .filter((p) => !restConflict(sched, p.id, day))
-            .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
-          if (!cands.length) { unfilled++; break; }
-          const pick = cands[0];
-          if (!sched[pick.id]) sched[pick.id] = {};
-          sched[pick.id][day] = post.id;
-          counts[pick.id]++;
-          assigned++;
-        }
+        const left = leftFor(post, day);
+        ROLES.forEach((role) => {
+          for (let k = left[role] || 0; k > 0; k--) if (!pickFor(post, day, role)) unfilled++;
+        });
+      }
+    });
+    // пас 2: місця «будь-хто»
+    posts.forEach((post) => {
+      for (let day = 1; day <= days; day++) {
+        const left = leftFor(post, day);
+        for (let k = left[ANY]; k > 0; k--) if (!pickFor(post, day, null)) unfilled++;
       }
     });
 
@@ -417,12 +476,13 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                 <td className="px-2 py-1 whitespace-nowrap font-medium" style={{ position: "sticky", left: 0, background: "#10130e", zIndex: 2 }}>
                   <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5" style={{ background: post.color }} />
                   {post.name}
+                  <div style={{ fontSize: "9px", color: "#777d68", fontWeight: 400 }}>{reqText(post)}</div>
                 </td>
                 {Array.from({ length: days }, (_, i) => i + 1).map((d) => {
-                  const have = coverage[post.id]?.[d] || 0;
-                  const ok = have >= post.slots;
+                  const c = coverage[post.id]?.[d] || { have: 0, need: totalReq(post), missing: [] };
+                  const ok = !c.missing.length;
                   return (
-                    <td key={d} className="text-center" style={{
+                    <td key={d} className="text-center" title={ok ? "" : `Бракує: ${c.missing.join(", ")}`} style={{
                       fontSize: "10px",
                       height: "22px",
                       color: ok ? "#7fa86a" : "#ff7a5c",
@@ -430,7 +490,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                       background: ok ? "transparent" : "#3a1c14",
                       borderLeft: "1px solid #1c2017",
                     }}>
-                      {have}/{post.slots}
+                      {c.have}/{c.need}
                     </td>
                   );
                 })}
@@ -559,15 +619,26 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
 function PostsTab({ posts, setPosts }) {
   const COLORS = ["#4a6b2f", "#2f6f9f", "#a8402f", "#2e8572", "#a87514", "#6b4a8a", "#8a6b2f", "#4a8a8a"];
   const update = (id, patch) => setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
-  const add = () => setPosts((prev) => [...prev, { id: uid(), name: "Новий пост", short: "НП", color: COLORS[prev.length % COLORS.length], slots: 1 }]);
+  const add = () => setPosts((prev) => [...prev, { id: uid(), name: "Новий пост", short: "НП", color: COLORS[prev.length % COLORS.length], req: { [ANY]: 1 } }]);
   const remove = (id) => { if (confirm("Видалити пост? Призначення на нього зникнуть з відображення.")) setPosts((prev) => prev.filter((p) => p.id !== id)); };
 
+  const setReq = (p, key, value) => {
+    const n = Math.max(0, Math.min(9, Number(value) || 0));
+    const req = { ...normReq(p) };
+    if (n === 0) delete req[key];
+    else req[key] = n;
+    update(p.id, { req });
+  };
+
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-4xl">
       <p className="text-sm mb-3" style={{ color: "#8a9070" }}>
-        «Осіб на добу» — скільки людей має бути на посту щодня. Це використовує авторозподіл і контроль покриття.
+        «Склад на добу» — скільки і кого має бути на посту щодня. «Будь-хто» — місця без вимоги до категорії.
+        Це використовують авторозподіл і контроль покриття.
       </p>
-      {posts.map((p) => (
+      {posts.map((p) => {
+        const req = normReq(p);
+        return (
         <div key={p.id} className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg mb-1"
           style={{ background: "#171b13", border: "1px solid #2a2f24" }}>
           <input value={p.name} onChange={(e) => update(p.id, { name: e.target.value })}
@@ -575,11 +646,6 @@ function PostsTab({ posts, setPosts }) {
           <label className="text-xs" style={{ color: "#8a9070" }}>Код
             <input value={p.short} maxLength={3} onChange={(e) => update(p.id, { short: e.target.value.toUpperCase() })}
               className="ml-1 px-2 py-1 rounded w-14 text-center font-bold" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
-          </label>
-          <label className="text-xs" style={{ color: "#8a9070" }}>Осіб на добу
-            <input type="number" min={1} max={9} value={p.slots}
-              onChange={(e) => update(p.id, { slots: Math.max(1, Number(e.target.value) || 1) })}
-              className="ml-1 px-2 py-1 rounded w-14 text-center" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
           </label>
           <div className="flex gap-1">
             {COLORS.map((c) => (
@@ -589,9 +655,31 @@ function PostsTab({ posts, setPosts }) {
             ))}
           </div>
           <div className="grow" />
+          <span className="text-xs font-semibold" style={{ color: "#c9c7ba" }}>Разом: {totalReq(p)}</span>
           <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
+          <div className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 pt-1" style={{ borderTop: "1px solid #22271d" }}>
+            <span className="text-xs uppercase tracking-wider" style={{ color: "#8a9070" }}>Склад на добу:</span>
+            {[ANY, ...ROLES].map((key) => {
+              const n = req[key] || 0;
+              return (
+                <label key={key} className="text-xs flex items-center gap-1" style={{ color: n > 0 ? "#e8e6dd" : "#555c4a" }}>
+                  {reqLabel(key)}
+                  <input type="number" min={0} max={9} value={n}
+                    onChange={(e) => setReq(p, key, e.target.value)}
+                    className="px-1 py-0.5 rounded w-11 text-center"
+                    style={{
+                      background: "#10130e",
+                      border: `1px solid ${n > 0 ? p.color : "#2a2f24"}`,
+                      color: n > 0 ? "#e8e6dd" : "#555c4a",
+                      fontWeight: n > 0 ? 700 : 400,
+                    }} />
+                </label>
+              );
+            })}
+          </div>
         </div>
-      ))}
+        );
+      })}
       <button onClick={add} className="mt-2 px-4 py-1.5 rounded-lg font-semibold" style={{ background: "#4a6b2f", color: "#fff" }}>+ Додати пост</button>
     </div>
   );
@@ -608,7 +696,10 @@ function SummaryTab({ people, posts, monthSched, coverage, days, dutyCount, ym }
 
   const gaps = posts.map((post) => {
     const bad = [];
-    for (let d = 1; d <= days; d++) if ((coverage[post.id]?.[d] || 0) < post.slots) bad.push(d);
+    for (let d = 1; d <= days; d++) {
+      const c = coverage[post.id]?.[d];
+      if (c && c.missing.length) bad.push({ d, missing: c.missing });
+    }
     return { post, bad };
   }).filter((g) => g.bad.length);
 
@@ -626,8 +717,9 @@ function SummaryTab({ people, posts, monthSched, coverage, days, dutyCount, ym }
         <div className="mb-5">
           {gaps.map(({ post, bad }) => (
             <div key={post.id} className="px-3 py-2 rounded-lg mb-1 text-sm" style={{ background: "#3a1c14", border: "1px solid #5a2c20" }}>
-              <span className="font-semibold" style={{ color: "#ff9a7c" }}>{post.name}:</span>{" "}
-              не вистачає людей у дні: {bad.join(", ")}
+              <span className="font-semibold" style={{ color: "#ff9a7c" }}>{post.name}</span>
+              <span style={{ color: "#c9a08f" }}> ({reqText(post)})</span> — не вистачає:{" "}
+              {bad.map(({ d, missing }) => `${d} число (${missing.join(", ")})`).join("; ")}
             </div>
           ))}
         </div>
