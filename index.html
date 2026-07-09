@@ -23,11 +23,11 @@ const ROLES = ["Управління", "Лікар", "Фельдшер", "Мед
 const ANY = "any"; // місце без вимоги до категорії
 
 const DEFAULT_POSTS = [
-  { id: "stab",   name: "Стабпункт",    short: "СТ", color: "#4a6b2f", req: { [ANY]: 2 } },
-  { id: "amb",    name: "Амбулаторія",  short: "АМ", color: "#2f6f9f", req: { [ANY]: 1 } },
-  { id: "travma", name: "Травмпункт",   short: "ТР", color: "#a8402f", req: { "Лікар": 1, "Фельдшер": 1, "Санітар": 1 } },
-  { id: "stac",   name: "Стаціонар",    short: "СЦ", color: "#2e8572", req: { [ANY]: 2 } },
-  { id: "kuhnya", name: "Кухня",        short: "КХ", color: "#a87514", req: { "Кухар": 1 } },
+  { id: "stab",   name: "Стабпункт",    short: "СТ", color: "#4a6b2f", req: { [ANY]: 2 }, daily: true },
+  { id: "amb",    name: "Амбулаторія",  short: "АМ", color: "#2f6f9f", req: { [ANY]: 1 }, daily: true },
+  { id: "travma", name: "Травмпункт",   short: "ТР", color: "#a8402f", req: { "Лікар": 1, "Фельдшер": 1, "Санітар": 1 }, daily: true },
+  { id: "stac",   name: "Стаціонар",    short: "СЦ", color: "#2e8572", req: { [ANY]: 2 }, daily: true },
+  { id: "kuhnya", name: "Кухня",        short: "КХ", color: "#a87514", req: { "Кухар": 1 }, daily: false },
 ];
 
 const WD = ["Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
@@ -176,11 +176,15 @@ function DutyRoster() {
 
   /* ── перевірки ── */
   const hasDuty = (sched, personId, day) => !!(sched[personId] && sched[personId][day]);
+  const isDailyPost = (postId) => postById[postId]?.daily !== false;
 
-  const restConflict = (sched, personId, day) => {
+  /* відпочинок враховується лише між нарядами на добові (24-год) пости —
+     звичайні пости на цю перевірку не впливають */
+  const restConflict = (sched, personId, day, postId) => {
+    if (!isDailyPost(postId)) return false;
     for (let k = 1; k <= restDays; k++) {
-      if (day - k >= 1 && hasDuty(sched, personId, day - k)) return true;
-      if (day + k <= days && hasDuty(sched, personId, day + k)) return true;
+      if (day - k >= 1 && hasDuty(sched, personId, day - k) && isDailyPost(sched[personId][day - k])) return true;
+      if (day + k <= days && hasDuty(sched, personId, day + k) && isDailyPost(sched[personId][day + k])) return true;
     }
     return false;
   };
@@ -220,7 +224,7 @@ function DutyRoster() {
         .filter((p) => p.active !== false && p.posts.includes(post.id))
         .filter((p) => !role || p.role === role)
         .filter((p) => !hasDuty(sched, p.id, day))
-        .filter((p) => !restConflict(sched, p.id, day))
+        .filter((p) => !restConflict(sched, p.id, day, post.id))
         .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
       if (!cands.length) return false;
       const pick = cands[0];
@@ -647,7 +651,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
           ✕ Стерти
         </button>
         <div className="grow" />
-        <label className="text-xs flex items-center gap-1" style={{ color: "#8a9070" }}>
+        <label className="text-xs flex items-center gap-1" title="Мінімум днів між нарядами на добові (24-год) пости — налаштовується на вкладці «Пости»" style={{ color: "#8a9070" }}>
           Відпочинок між нарядами:
           <select value={restDays} onChange={(e) => setRestDays(Number(e.target.value))}
             className="rounded px-1 py-0.5" style={{ background: "#1d2218", color: "#e8e6dd" }}>
@@ -695,7 +699,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
       </div>
 
       <p className="text-xs mb-2 no-print" style={{ color: "#8a9070" }}>
-        Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Помаранчева рамка — порушено відпочинок між нарядами.
+        Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Помаранчева рамка — порушено відпочинок між нарядами на добовий пост.
         {filterDay && <span> Показано лише тих, хто в наряді {filterDay} числа — <button onClick={() => setFilterDay(null)} className="underline" style={{ color: "#c9c7ba" }}>показати всіх</button>.</span>}
       </p>
 
@@ -745,7 +749,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                     {Array.from({ length: days }, (_, i) => i + 1).map((d) => {
                       const pid = (sched[p.id] || {})[d];
                       const post = pid ? postById[pid] : null;
-                      const conflict = pid && restConflict(sched, p.id, d);
+                      const conflict = pid && restConflict(sched, p.id, d, pid);
                       const w = wdOf(ym, d);
                       const weekend = w === 0 || w === 6;
                       return (
@@ -942,7 +946,7 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
 function PostsTab({ posts, setPosts }) {
   const COLORS = ["#4a6b2f", "#2f6f9f", "#a8402f", "#2e8572", "#a87514", "#6b4a8a", "#8a6b2f", "#4a8a8a"];
   const update = (id, patch) => setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
-  const add = () => setPosts((prev) => [...prev, { id: uid(), name: "Новий пост", short: "НП", color: COLORS[prev.length % COLORS.length], req: { [ANY]: 1 } }]);
+  const add = () => setPosts((prev) => [...prev, { id: uid(), name: "Новий пост", short: "НП", color: COLORS[prev.length % COLORS.length], req: { [ANY]: 1 }, daily: true }]);
   const remove = (id) => { if (confirm("Видалити пост? Призначення на нього зникнуть з відображення.")) setPosts((prev) => prev.filter((p) => p.id !== id)); };
 
   const setReq = (p, key, value) => {
@@ -958,6 +962,8 @@ function PostsTab({ posts, setPosts }) {
       <p className="text-sm mb-3" style={{ color: "#8a9070" }}>
         «Склад на добу» — скільки і кого має бути на посту щодня. «Будь-хто» — місця без вимоги до категорії.
         Це використовують авторозподіл і контроль покриття.
+        «Добовий» — пост повного (24-год) чергування: авторозподіл і перевірка відпочинку (вкладка «Графік») враховують
+        лише такі пости, щоб людина не йшла на добове чергування частіше, ніж дозволяє налаштований відпочинок.
       </p>
       {posts.map((p) => {
         const req = normReq(p);
@@ -977,6 +983,12 @@ function PostsTab({ posts, setPosts }) {
                 style={{ background: c, outline: p.color === c ? "2px solid #e8e6dd" : "none", outlineOffset: "1px" }} />
             ))}
           </div>
+          <label className="text-xs flex items-center gap-1 px-2 py-1 rounded"
+            title="Пост повної доби (24 год) — авторозподіл та перевірка відпочинку враховують лише добові пости"
+            style={{ color: p.daily !== false ? "#e8e6dd" : "#555c4a", border: `1px solid ${p.daily !== false ? p.color : "#2a2f24"}` }}>
+            <input type="checkbox" checked={p.daily !== false} onChange={(e) => update(p.id, { daily: e.target.checked })} />
+            Добовий
+          </label>
           <div className="grow" />
           <span className="text-xs font-semibold" style={{ color: "#c9c7ba" }}>Разом: {totalReq(p)}</span>
           <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
