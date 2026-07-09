@@ -179,9 +179,24 @@ function DutyRoster() {
     });
   };
 
+  /* призначає/знімає весь блок днів «зміни» посту одразу (напр. цілий тиждень), починаючи з клітинки, по якій клікнули */
+  const setCellRange = (personId, dayFrom, dayTo, postId) => {
+    setSchedule((prev) => {
+      const m = { ...(prev[ym] || {}) };
+      const row = { ...(m[personId] || {}) };
+      let allSame = true;
+      for (let d = dayFrom; d <= dayTo; d++) if (row[d] !== postId) { allSame = false; break; }
+      for (let d = dayFrom; d <= dayTo; d++) { if (allSame) delete row[d]; else row[d] = postId; }
+      m[personId] = row;
+      return { ...prev, [ym]: m };
+    });
+  };
+
   const cellClick = (personId, day) => {
-    if (tool === "erase") setCell(personId, day, null);
-    else setCell(personId, day, tool);
+    if (tool === "erase") { setCell(personId, day, null); return; }
+    const tour = Math.max(1, Number(postById[tool]?.tourDays) || 1);
+    if (tour <= 1) { setCell(personId, day, tool); return; }
+    setCellRange(personId, day, Math.min(days, day + tour - 1), tool);
   };
 
   /* ── перевірки ── */
@@ -245,6 +260,27 @@ function DutyRoster() {
       return true;
     };
 
+    /* та сама людина закриває весь блок днів «зміни» посту (напр. цілий тиждень) */
+    const pickForRange = (post, dayFrom, dayTo, role) => {
+      const cands = people
+        .filter((p) => p.active !== false && p.posts.includes(post.id))
+        .filter((p) => !role || p.role === role)
+        .filter((p) => role !== DOC_ROLE || doctorSpecialtyOk(post, p))
+        .filter((p) => {
+          for (let d = dayFrom; d <= dayTo; d++) {
+            if (hasDuty(sched, p.id, d) || restConflict(sched, p.id, d, post.id)) return false;
+          }
+          return true;
+        })
+        .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
+      if (!cands.length) return false;
+      const pick = cands[0];
+      if (!sched[pick.id]) sched[pick.id] = {};
+      for (let d = dayFrom; d <= dayTo; d++) sched[pick.id][d] = post.id;
+      counts[pick.id] += dayTo - dayFrom + 1;
+      return true;
+    };
+
     // скільки ще треба з урахуванням уже проставленого
     const leftFor = (post, day) => {
       const left = { ...normReq(post) };
@@ -259,8 +295,29 @@ function DutyRoster() {
       return left;
     };
 
+    const tourOf = (post) => Math.max(1, Number(post.tourDays) || 1);
+    const dayByDayPosts = posts.filter((post) => tourOf(post) === 1);
+    const tourPosts = posts.filter((post) => tourOf(post) > 1);
+
+    // пости з багатоденною зміною: одна людина/команда закриває весь блок днів одразу
+    tourPosts.forEach((post) => {
+      const tour = tourOf(post);
+      for (let blockStart = fromDay; blockStart <= toDay; blockStart += tour) {
+        const blockEnd = Math.min(toDay, blockStart + tour - 1);
+        const need = { ...normReq(post) };
+        ROLES.forEach((role) => {
+          for (let k = need[role] || 0; k > 0; k--) {
+            if (!pickForRange(post, blockStart, blockEnd, role)) unfilled += blockEnd - blockStart + 1;
+          }
+        });
+        for (let k = need[ANY] || 0; k > 0; k--) {
+          if (!pickForRange(post, blockStart, blockEnd, null)) unfilled += blockEnd - blockStart + 1;
+        }
+      }
+    });
+
     // пас 1: місця з вимогою категорії — фахівці дефіцитніші, їх ставимо першими
-    posts.forEach((post) => {
+    dayByDayPosts.forEach((post) => {
       for (let day = fromDay; day <= toDay; day++) {
         const left = leftFor(post, day);
         ROLES.forEach((role) => {
@@ -269,7 +326,7 @@ function DutyRoster() {
       }
     });
     // пас 2: місця «будь-хто»
-    posts.forEach((post) => {
+    dayByDayPosts.forEach((post) => {
       for (let day = fromDay; day <= toDay; day++) {
         const left = leftFor(post, day);
         for (let k = left[ANY]; k > 0; k--) if (!pickFor(post, day, null)) unfilled++;
@@ -647,13 +704,14 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
         <span className="text-xs uppercase tracking-wider mr-1" style={{ color: "#8a9070" }}>Постав на:</span>
         {posts.map((p) => (
           <button key={p.id} onClick={() => setTool(p.id)}
+            title={(p.tourDays || 1) > 1 ? `Зміна триває ${p.tourDays} дн. — клік заповнює весь період` : undefined}
             className="px-3 py-1.5 rounded-lg text-sm font-semibold"
             style={{
               background: tool === p.id ? p.color : "#1d2218",
               color: tool === p.id ? "#fff" : "#c9c7ba",
               border: `1px solid ${p.color}`,
             }}>
-            {p.short} · {p.name}
+            {p.short} · {p.name}{(p.tourDays || 1) > 1 ? ` · ${p.tourDays}д` : ""}
           </button>
         ))}
         <button onClick={() => setTool("erase")}
@@ -710,7 +768,8 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
       </div>
 
       <p className="text-xs mb-2 no-print" style={{ color: "#8a9070" }}>
-        Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Помаранчева рамка — порушено відпочинок між нарядами на добовий пост.
+        Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Для постів зі «зміною» довшою за день клік одразу заповнює весь її період.
+        Помаранчева рамка — порушено відпочинок між нарядами на добовий пост.
         {filterDay && <span> Показано лише тих, хто в наряді {filterDay} числа — <button onClick={() => setFilterDay(null)} className="underline" style={{ color: "#c9c7ba" }}>показати всіх</button>.</span>}
       </p>
 
@@ -993,6 +1052,8 @@ function PostsTab({ posts, setPosts }) {
         лише такі пости, щоб людина не йшла на добове чергування частіше, ніж дозволяє налаштований відпочинок.
         Якщо в складі є «Лікар», можна вказати спеціальність — тоді на пост ставитимуться лише лікарі з такою
         спеціальністю (позначається на вкладці «Особовий склад»); «Будь-який» знімає обмеження.
+        «Зміна, дн.» — на скільки днів поспіль ставиться одна й та сама людина, перш ніж заміна (наприклад, тиждень
+        чи два тижні); авторозподіл і клік на клітинці графіка заповнюють увесь цей період одразу.
       </p>
       {posts.map((p) => {
         const req = normReq(p);
@@ -1018,6 +1079,33 @@ function PostsTab({ posts, setPosts }) {
             <input type="checkbox" checked={p.daily !== false} onChange={(e) => update(p.id, { daily: e.target.checked })} />
             Добовий
           </label>
+          <label className="text-xs flex items-center gap-1"
+            title="Скільки днів поспіль на посту одна й та сама людина, перш ніж заміна. 1 — змінюються щодня."
+            style={{ color: (p.tourDays || 1) > 1 ? "#e8e6dd" : "#8a9070" }}>
+            Зміна, дн.
+            <input type="number" min={1} max={60} value={p.tourDays || 1}
+              onChange={(e) => update(p.id, { tourDays: Math.max(1, Math.min(60, Number(e.target.value) || 1)) })}
+              className="px-1 py-0.5 rounded w-12 text-center"
+              style={{
+                background: "#10130e",
+                border: `1px solid ${(p.tourDays || 1) > 1 ? p.color : "#2a2f24"}`,
+                color: (p.tourDays || 1) > 1 ? "#e8e6dd" : "#555c4a",
+                fontWeight: (p.tourDays || 1) > 1 ? 700 : 400,
+              }} />
+          </label>
+          <div className="flex gap-1">
+            {[["Щодня", 1], ["Тиждень", 7], ["2 тижні", 14]].map(([label, n]) => (
+              <button key={label} onClick={() => update(p.id, { tourDays: n })}
+                className="px-2 py-1 rounded text-xs font-semibold"
+                style={{
+                  background: (p.tourDays || 1) === n ? p.color : "#10130e",
+                  color: (p.tourDays || 1) === n ? "#fff" : "#777d68",
+                  border: `1px solid ${(p.tourDays || 1) === n ? p.color : "#2a2f24"}`,
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="grow" />
           <span className="text-xs font-semibold" style={{ color: "#c9c7ba" }}>Разом: {totalReq(p)}</span>
           <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
