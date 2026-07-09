@@ -287,13 +287,14 @@ function DutyRoster() {
   const hasDuty = (sched, personId, day) => !!(sched[personId] && sched[personId][day]);
   const isDailyPost = (postId) => postById[postId]?.daily !== false;
 
-  /* відпочинок рахується від нарядів на добові (24-год) пости — якщо перед/після такого наряду
-     не минуло достатньо днів відпочинку, людину не можна ставити в БУДЬ-ЯКИЙ наряд (навіть на
-     недобовий пост іншого типу — напр. з травмпункту не йти одразу в стаціонар чи на кухню) */
+  /* відпочинок рахується від нарядів на добові (24-год) пости — лише ПІСЛЯ такого наряду,
+     поки не минуло достатньо днів відпочинку, людину не можна ставити в БУДЬ-ЯКИЙ наступний
+     наряд (навіть на недобовий пост іншого типу — напр. з травмпункту не йти одразу в стаціонар
+     чи на кухню, і тим паче не в інший добовий). Перед добовим нарядом ставити можна — заборона
+     не діє на дні, що передують йому */
   const restConflict = (sched, personId, day, postId) => {
     for (let k = 1; k <= restDays; k++) {
       if (day - k >= 1 && hasDuty(sched, personId, day - k) && isDailyPost(sched[personId][day - k])) return true;
-      if (day + k <= days && hasDuty(sched, personId, day + k) && isDailyPost(sched[personId][day + k])) return true;
     }
     return false;
   };
