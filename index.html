@@ -287,22 +287,16 @@ function DutyRoster() {
   const hasDuty = (sched, personId, day) => !!(sched[personId] && sched[personId][day]);
   const isDailyPost = (postId) => postById[postId]?.daily !== false;
 
-  /* відпочинок враховується лише між нарядами на добові (24-год) пости —
-     звичайні пости на цю перевірку не впливають */
+  /* відпочинок рахується від нарядів на добові (24-год) пости — якщо перед/після такого наряду
+     не минуло достатньо днів відпочинку, людину не можна ставити в БУДЬ-ЯКИЙ наряд (навіть на
+     недобовий пост іншого типу — напр. з травмпункту не йти одразу в стаціонар чи на кухню) */
   const restConflict = (sched, personId, day, postId) => {
-    if (!isDailyPost(postId)) return false;
     for (let k = 1; k <= restDays; k++) {
       if (day - k >= 1 && hasDuty(sched, personId, day - k) && isDailyPost(sched[personId][day - k])) return true;
       if (day + k <= days && hasDuty(sched, personId, day + k) && isDailyPost(sched[personId][day + k])) return true;
     }
     return false;
   };
-
-  /* людина щойно (учора) відпрацювала добове (24-год) чергування — авторозподіл при виборі кандидата
-     на СЬОГОДНІ намагається дати їй вихідний і не ставить її в наряд, навіть на пост іншого типу
-     (не добовий), якщо є інший придатний кандидат без такого навантаження */
-  const justFinishedDaily = (sched, personId, day) =>
-    day - 1 >= 1 && hasDuty(sched, personId, day - 1) && isDailyPost(sched[personId][day - 1]);
 
   const coverage = useMemo(() => {
     // {postId: {day: {have, need, missing}}}
@@ -345,8 +339,7 @@ function DutyRoster() {
     });
     let unfilled = 0;
 
-    const byRotation = (post, day) => (a, b) =>
-      (justFinishedDaily(sched, a.id, day) ? 1 : 0) - (justFinishedDaily(sched, b.id, day) ? 1 : 0) ||
+    const byRotation = (post) => (a, b) =>
       (postCounts[post.id][a.id] || 0) - (postCounts[post.id][b.id] || 0) ||
       counts[a.id] - counts[b.id] ||
       a.name.localeCompare(b.name, "uk");
@@ -359,7 +352,7 @@ function DutyRoster() {
         .filter((p) => role !== DOC_ROLE || !specialties || specialties.includes(p.specialty))
         .filter((p) => !hasDuty(sched, p.id, day))
         .filter((p) => !restConflict(sched, p.id, day, post.id))
-        .sort(byRotation(post, day));
+        .sort(byRotation(post));
       if (!cands.length) return false;
       const pick = cands[0];
       if (!sched[pick.id]) sched[pick.id] = {};
@@ -385,7 +378,7 @@ function DutyRoster() {
         // не ставити людину впритул до її ж власної зміни на цьому самому посту (ні до, ні після) —
         // інакше вона може отримати два терміни підряд без перерви між ними
         .filter((p) => sched[p.id]?.[dayFrom - 1] !== post.id && sched[p.id]?.[dayTo + 1] !== post.id)
-        .sort(byRotation(post, dayFrom));
+        .sort(byRotation(post));
       if (!cands.length) return false;
       const pick = cands[0];
       if (!sched[pick.id]) sched[pick.id] = {};
@@ -403,8 +396,9 @@ function DutyRoster() {
     };
 
     const tourOf = (post) => Math.max(1, Number(post.tourDays) || 1);
-    const dayByDayPosts = posts.filter((post) => tourOf(post) === 1);
-    const tourPosts = posts.filter((post) => tourOf(post) > 1);
+    const activePosts = posts.filter((post) => !post.hidden);
+    const dayByDayPosts = activePosts.filter((post) => tourOf(post) === 1);
+    const tourPosts = activePosts.filter((post) => tourOf(post) > 1);
 
     // хто саме і скільки днів вже відпрацював у поточній зміні на кінець попереднього місяця
     // (щоб не переривати зміну на межі місяців і не перезапускати ротацію з чистого аркуша)
@@ -537,7 +531,7 @@ function DutyRoster() {
       });
     });
     lines.push("");
-    lines.push("Умовні позначення:;" + posts.map((p) => `${p.short} — ${p.name}`).join("; "));
+    lines.push("Умовні позначення:;" + posts.filter((p) => !p.hidden).map((p) => `${p.short} — ${p.name}`).join("; "));
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -638,7 +632,7 @@ function DutyRoster() {
       covHeader.fill = fill("e4e2d6");
       r++;
 
-      posts.forEach((post) => {
+      posts.filter((post) => !post.hidden).forEach((post) => {
         const row = ws.getRow(r);
         const nameCell = row.getCell(1);
         nameCell.value = `${post.name}\n${reqText(post)}`;
@@ -666,7 +660,7 @@ function DutyRoster() {
       r++;
       ws.mergeCells(r, 1, r, lastCol);
       const legendCell = ws.getCell(r, 1);
-      legendCell.value = "Умовні позначення: " + posts.map((p) => `${p.short} — ${p.name} (${reqText(p)})`).join("; ") + ".";
+      legendCell.value = "Умовні позначення: " + posts.filter((p) => !p.hidden).map((p) => `${p.short} — ${p.name} (${reqText(p)})`).join("; ") + ".";
       legendCell.font = { italic: true, size: 9, color: { argb: "FF555C4A" } };
       legendCell.alignment = { wrapText: true };
 
@@ -859,6 +853,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
 
   const sched = monthSched;
   const [py, pm] = ym.split("-").map(Number);
+  const visiblePosts = posts.filter((p) => !p.hidden);
 
   return (
     <div>
@@ -869,7 +864,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
       {/* Панель інструментів: вибір поста — завжди на видноті */}
       <div className="flex flex-wrap items-center gap-2 mb-2 no-print">
         <span className="text-xs uppercase tracking-wider mr-1" style={{ color: "#8a9070" }}>Постав на:</span>
-        {posts.map((p) => (
+        {visiblePosts.map((p) => (
           <button key={p.id} onClick={() => setTool(p.id)}
             title={(p.tourDays || 1) > 1 ? `Зміна триває ${p.tourDays} дн. — клік заповнює весь період` : undefined}
             className="px-3 py-1.5 rounded-lg text-sm font-semibold"
@@ -1029,7 +1024,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
             {/* Покриття постів */}
             <tr><td colSpan={days + 2} className="print-group px-2 py-1 text-xs font-bold uppercase tracking-wider"
               style={{ background: "#1d2218", color: "#8a9070", position: "sticky", left: 0 }}>Покриття постів (є / треба)</td></tr>
-            {posts.map((post) => (
+            {visiblePosts.map((post) => (
               <tr key={"cov-" + post.id} style={{ borderTop: "1px solid #22271d" }}>
                 <td className="px-2 py-1 whitespace-nowrap font-medium" style={{ position: "sticky", left: 0, background: "#10130e", zIndex: 2 }}>
                   <span className="no-print inline-block w-2.5 h-2.5 rounded-sm mr-1.5" style={{ background: post.color }} />
@@ -1065,10 +1060,10 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
       <div className="print-only" style={{ marginTop: "4px", fontSize: "7pt" }}>
         <div>
           Умовні позначення:{" "}
-          {posts.map((p, i) => (
+          {visiblePosts.map((p, i) => (
             <span key={p.id}>
               <span className={"legend-swatch" + (colorPrint ? " pcolor" : "")} style={colorPrint ? { "--pcolor": p.color } : null} />
-              {p.short} — {p.name} ({reqText(p)}){i < posts.length - 1 ? "; " : "."}
+              {p.short} — {p.name} ({reqText(p)}){i < visiblePosts.length - 1 ? "; " : "."}
             </span>
           ))}
         </div>
@@ -1082,6 +1077,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
 
 function PeopleTab({ people, setPeople, posts, loadDemo }) {
   const [form, setForm] = useState({ name: "", rank: "", role: ROLES[0], posts: [] });
+  const visiblePosts = posts.filter((p) => !p.hidden);
 
   const togglePost = (arr, id) => arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id];
 
@@ -1126,7 +1122,7 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
         )}
         <div className="text-xs" style={{ color: "#8a9070" }}>Допущений до постів
           <div className="flex gap-1 mt-1 flex-wrap">
-            {posts.map((p) => (
+            {visiblePosts.map((p) => (
               <button key={p.id} onClick={() => setForm({ ...form, posts: togglePost(form.posts, p.id) })}
                 className="px-2 py-1 rounded text-xs font-semibold"
                 style={{
@@ -1171,7 +1167,7 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
                   </select>
                 )}
                 <div className="flex gap-1">
-                  {posts.map((post) => (
+                  {visiblePosts.map((post) => (
                     <button key={post.id} onClick={() => update(p.id, { posts: togglePost(p.posts, post.id) })}
                       title={post.name}
                       className="px-2 py-1 rounded text-xs font-semibold"
@@ -1238,26 +1234,11 @@ function PostsTab({ posts, setPosts, restDays }) {
 
   return (
     <div className="max-w-4xl">
-      <p className="text-sm mb-3" style={{ color: "#8a9070" }}>
-        «Склад на добу» — скільки і кого має бути на посту щодня. «Будь-хто» — місця без вимоги до категорії.
-        Це використовують авторозподіл і контроль покриття.
-        «Добовий» — пост повного (24-год) чергування: авторозподіл і перевірка відпочинку (вкладка «Графік») враховують
-        лише такі пости, щоб людина не йшла на добове чергування частіше, ніж дозволяє налаштований відпочинок.
-        Якщо в складі є «Лікар», можна додати вимоги до спеціальності: кожна вимога — окрема кількість лікарів
-        БУДЬ-ЯКОЇ з позначених у ній спеціальностей (напр. одна вимога «Хірург + Травматолог + Анестезіолог, 1» —
-        це один лікар будь-якої з трьох; а дві окремі вимоги «Хірург, 1» і «Терапевт, 1» — це вже і хірург,
-        і терапевт одночасно). Спеціальність лікаря вказується на вкладці «Особовий склад».
-        Лікарські місця понад усі вимоги — будь-якої спеціальності.
-        «Зміна, дн.» — на скільки днів поспіль ставиться одна й та сама людина, перш ніж заміна (наприклад, тиждень
-        чи два тижні); авторозподіл і клік на клітинці графіка заповнюють увесь цей період одразу.
-        «Треба людей» — мінімальна кількість осіб, щоб ротаційно закрити цей склад, не порушуючи відпочинок
-        (налаштований на вкладці «Графік») між нарядами на добові пости.
-      </p>
       {posts.map((p) => {
         const req = normReq(p);
         return (
         <div key={p.id} className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg mb-1"
-          style={{ background: "#171b13", border: "1px solid #2a2f24" }}>
+          style={{ background: "#171b13", border: "1px solid #2a2f24", opacity: p.hidden ? 0.45 : 1 }}>
           <input value={p.name} onChange={(e) => update(p.id, { name: e.target.value })}
             className="px-2 py-1 rounded w-44 font-medium" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }} />
           <label className="text-xs" style={{ color: "#8a9070" }}>Код
@@ -1313,6 +1294,11 @@ function PostsTab({ posts, setPosts, restDays }) {
             style={{ color: "#8a9070" }}>
             Треба людей: <b style={{ color: "#c9c7ba" }}>{peopleNeeded(p, restDays)}</b>
           </span>
+          <button onClick={() => update(p.id, { hidden: !p.hidden })}
+            title={p.hidden ? "Показати пост — знову буде видимий і доступний для призначень" : "Приховати пост — не показувати в графіку й списках вибору"}
+            className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: p.hidden ? "#8a9070" : "#c9c7ba" }}>
+            {p.hidden ? "Показати" : "Приховати"}
+          </button>
           <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
           <div className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 pt-1" style={{ borderTop: "1px solid #22271d" }}>
             <span className="text-xs uppercase tracking-wider" style={{ color: "#8a9070" }}>Склад на добу:</span>
@@ -1434,7 +1420,7 @@ function SummaryTab({ people, posts, monthSched, dutyCount }) {
           );
         })}
         <div className="flex flex-wrap gap-3 mt-2 pt-2 text-xs" style={{ borderTop: "1px solid #2a2f24", color: "#8a9070" }}>
-          {posts.map((p) => (
+          {posts.filter((p) => !p.hidden).map((p) => (
             <span key={p.id}><span className="inline-block w-2.5 h-2.5 rounded-sm mr-1" style={{ background: p.color }} />{p.name}</span>
           ))}
         </div>
