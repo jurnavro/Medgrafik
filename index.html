@@ -99,6 +99,7 @@ function DutyRoster() {
   const isCurrentMonth = ym === ymOf(today);
   const [autoFrom, setAutoFrom] = useState(isCurrentMonth ? today.getDate() : 1);
   const [autoDays, setAutoDays] = useState(daysIn(ym) - (isCurrentMonth ? today.getDate() - 1 : 0));
+  const [filterDay, setFilterDay] = useState(null); // показати лише тих, хто в наряді у це число
   const prevYmRef = useRef(ym);
 
   /* завантаження */
@@ -142,6 +143,7 @@ function DutyRoster() {
     const start = ymOf(t) === ym ? t.getDate() : 1;
     setAutoFrom(start);
     setAutoDays(daysIn(ym) - start + 1);
+    setFilterDay(null);
   }, [ym]);
   const autoFromClamped = Math.min(Math.max(1, autoFrom || 1), days);
   const autoDaysClamped = Math.min(Math.max(1, autoDays || 1), days - autoFromClamped + 1);
@@ -406,7 +408,7 @@ function DutyRoster() {
         {!loaded ? (
           <div className="text-center py-16" style={{ color: "#8a9070" }}>Завантаження…</div>
         ) : tab === "grid" ? (
-          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoFrom: autoFromClamped, setAutoFrom, autoDays: autoDaysClamped, setAutoDays, exportData, importData }} />
+          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoFrom: autoFromClamped, setAutoFrom, autoDays: autoDaysClamped, setAutoDays, filterDay, setFilterDay, exportData, importData }} />
         ) : tab === "people" ? (
           <PeopleTab {...{ people, setPeople, posts, loadDemo }} />
         ) : tab === "posts" ? (
@@ -439,7 +441,7 @@ function ImportButton({ onFile, label, className, style }) {
   );
 }
 
-function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoFrom, setAutoFrom, autoDays, setAutoDays, exportData, importData }) {
+function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoFrom, setAutoFrom, autoDays, setAutoDays, filterDay, setFilterDay, exportData, importData }) {
   if (!people.length) {
     return (
       <div className="text-center py-16">
@@ -492,6 +494,14 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
             {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n} дн.</option>)}
           </select>
         </label>
+        <label className="text-xs flex items-center gap-1" title="Сховати тих, хто не в наряді у це число" style={{ color: "#8a9070" }}>
+          Хто в наряді:
+          <select value={filterDay ?? ""} onChange={(e) => setFilterDay(e.target.value ? Number(e.target.value) : null)}
+            className="rounded px-1 py-0.5" style={{ background: "#1d2218", color: "#e8e6dd" }}>
+            <option value="">Всі</option>
+            {Array.from({ length: days }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d} число</option>)}
+          </select>
+        </label>
         <label className="text-xs flex items-center gap-1" title="Діапазон днів для «Авторозподіл» і «Очистити»" style={{ color: "#8a9070" }}>
           Діапазон днів — з числа:
           <input type="number" min={1} max={days} value={autoFrom}
@@ -520,6 +530,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
 
       <p className="text-xs mb-2 no-print" style={{ color: "#8a9070" }}>
         Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Помаранчева рамка — порушено відпочинок між нарядами.
+        {filterDay && <span> Показано лише тих, хто в наряді {filterDay} числа — <button onClick={() => setFilterDay(null)} className="underline" style={{ color: "#c9c7ba" }}>показати всіх</button>.</span>}
       </p>
 
       {/* Сітка */}
@@ -547,7 +558,9 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
           </thead>
           <tbody>
             {ROLES.map((role) => {
-              const group = people.filter((p) => p.role === role && p.active !== false);
+              const group = people
+                .filter((p) => p.role === role && p.active !== false)
+                .filter((p) => !filterDay || (sched[p.id] && sched[p.id][filterDay]));
               if (!group.length) return null;
               return [
                 <tr key={role + "-h"}>
