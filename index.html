@@ -368,12 +368,43 @@ function DutyRoster() {
     const dayByDayPosts = posts.filter((post) => tourOf(post) === 1);
     const tourPosts = posts.filter((post) => tourOf(post) > 1);
 
+    // хто саме і скільки днів вже відпрацював у поточній зміні на кінець попереднього місяця
+    // (щоб не переривати зміну на межі місяців і не перезапускати ротацію з чистого аркуша)
+    const prevYm = shiftYm(ym, -1);
+    const prevSched = schedule[prevYm] || {};
+    const prevDays = daysIn(prevYm);
+
     // пости з багатоденною зміною: одна людина/команда закриває весь блок днів одразу
     tourPosts.forEach((post) => {
       const tour = tourOf(post);
       const specNeed = normDocSpecReq(post);
       const specSum = Object.values(specNeed).reduce((s, n) => s + Math.max(0, n), 0);
-      for (let blockStart = fromDay; blockStart <= toDay; blockStart += tour) {
+
+      // донести з минулого місяця незавершену зміну тим самим людям, перш ніж починати нову ротацію
+      let firstBlockStart = fromDay;
+      if (fromDay === 1) {
+        let carryEnd = 0;
+        people.forEach((p) => {
+          if (p.active === false || !p.posts.includes(post.id)) return;
+          const row = prevSched[p.id] || {};
+          if (row[prevDays] !== post.id) return;
+          let streak = 0;
+          for (let d = prevDays; d >= 1 && row[d] === post.id; d--) streak++;
+          if (streak >= tour) return; // зміна вже завершилась рівно на кінець місяця — далі звичайна ротація
+          const remaining = Math.min(toDay, tour - streak);
+          for (let d = 1; d <= remaining; d++) { if (hasDuty(sched, p.id, d)) return; }
+          for (let d = 1; d <= remaining; d++) {
+            if (!sched[p.id]) sched[p.id] = {};
+            sched[p.id][d] = post.id;
+          }
+          counts[p.id] = (counts[p.id] || 0) + remaining;
+          postCounts[post.id][p.id] = (postCounts[post.id][p.id] || 0) + remaining;
+          carryEnd = Math.max(carryEnd, remaining);
+        });
+        if (carryEnd > 0) firstBlockStart = carryEnd + 1;
+      }
+
+      for (let blockStart = firstBlockStart; blockStart <= toDay; blockStart += tour) {
         const blockEnd = Math.min(toDay, blockStart + tour - 1);
         const need = { ...normReq(post) };
         Object.entries(specNeed).forEach(([spec, n]) => {
