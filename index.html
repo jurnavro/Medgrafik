@@ -127,6 +127,8 @@ function DutyRoster() {
   const notify = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); };
 
   const days = daysIn(ym);
+  const [autoDays, setAutoDays] = useState(days);
+  const autoDaysClamped = Math.min(Math.max(1, autoDays || 1), days);
   const monthSched = schedule[ym] || {};
   const postById = useMemo(() => Object.fromEntries(posts.map((p) => [p.id, p])), [posts]);
 
@@ -185,6 +187,7 @@ function DutyRoster() {
 
   /* ── авторозподіл ── */
   const autoFill = () => {
+    const fillDays = autoDaysClamped;
     const sched = {};
     Object.entries(monthSched).forEach(([pid, row]) => { sched[pid] = { ...row }; });
     const counts = {};
@@ -222,7 +225,7 @@ function DutyRoster() {
 
     // пас 1: місця з вимогою категорії — фахівці дефіцитніші, їх ставимо першими
     posts.forEach((post) => {
-      for (let day = 1; day <= days; day++) {
+      for (let day = 1; day <= fillDays; day++) {
         const left = leftFor(post, day);
         ROLES.forEach((role) => {
           for (let k = left[role] || 0; k > 0; k--) if (!pickFor(post, day, role)) unfilled++;
@@ -231,14 +234,15 @@ function DutyRoster() {
     });
     // пас 2: місця «будь-хто»
     posts.forEach((post) => {
-      for (let day = 1; day <= days; day++) {
+      for (let day = 1; day <= fillDays; day++) {
         const left = leftFor(post, day);
         for (let k = left[ANY]; k > 0; k--) if (!pickFor(post, day, null)) unfilled++;
       }
     });
 
     setSchedule((prev) => ({ ...prev, [ym]: sched }));
-    notify(unfilled ? `Готово, але ${unfilled} змін не закрито — бракує людей` : "Графік заповнено");
+    const rangeNote = fillDays < days ? ` (дні 1–${fillDays})` : "";
+    notify(unfilled ? `Готово${rangeNote}, але ${unfilled} змін не закрито — бракує людей` : `Графік заповнено${rangeNote}`);
   };
 
   const clearMonth = () => {
@@ -370,7 +374,7 @@ function DutyRoster() {
         {!loaded ? (
           <div className="text-center py-16" style={{ color: "#8a9070" }}>Завантаження…</div>
         ) : tab === "grid" ? (
-          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, exportData, importData }} />
+          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoDays: autoDaysClamped, setAutoDays, exportData, importData }} />
         ) : tab === "people" ? (
           <PeopleTab {...{ people, setPeople, posts, loadDemo }} />
         ) : tab === "posts" ? (
@@ -403,7 +407,7 @@ function ImportButton({ onFile, label, className, style }) {
   );
 }
 
-function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, exportData, importData }) {
+function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoDays, setAutoDays, exportData, importData }) {
   if (!people.length) {
     return (
       <div className="text-center py-16">
@@ -455,6 +459,13 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
             className="rounded px-1 py-0.5" style={{ background: "#1d2218", color: "#e8e6dd" }}>
             {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n} дн.</option>)}
           </select>
+        </label>
+        <label className="text-xs flex items-center gap-1" style={{ color: "#8a9070" }}>
+          Розподілити на:
+          <input type="number" min={1} max={days} value={autoDays}
+            onChange={(e) => setAutoDays(Math.min(days, Math.max(1, Number(e.target.value) || 1)))}
+            className="rounded px-1 py-0.5 text-center" style={{ width: "3.2rem", background: "#1d2218", color: "#e8e6dd" }} />
+          дн.
         </label>
         <button onClick={autoFill} className="px-3 py-1.5 rounded-lg text-sm font-semibold" style={{ background: "#4a6b2f", color: "#fff" }}>
           ⚙ Авторозподіл
