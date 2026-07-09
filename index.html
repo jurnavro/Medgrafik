@@ -546,7 +546,8 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                   <th key={d} className="px-0.5 py-1 text-center" style={{
                     minWidth: "2rem",
                     color: weekend ? "#d0a060" : "#c9c7ba",
-                    background: isToday(d) ? "#3a4032" : undefined,
+                    background: d === filterDay ? "#2f5a7a" : isToday(d) ? "#3a4032" : undefined,
+                    boxShadow: d === filterDay ? "inset 0 0 0 2px #5fa8ff" : undefined,
                   }}>
                     <div>{d}</div>
                     <div style={{ fontSize: "9px", color: weekend ? "#d0a060" : "#777d68" }}>{WD[w]}</div>
@@ -591,7 +592,10 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                             fontWeight: 700,
                             fontSize: "10px",
                             height: "26px",
-                            boxShadow: conflict ? "inset 0 0 0 2px #ff9933" : undefined,
+                            boxShadow: [
+                              conflict ? "inset 0 0 0 2px #ff9933" : null,
+                              d === filterDay ? "inset 0 0 0 2px #5fa8ff" : null,
+                            ].filter(Boolean).join(", ") || undefined,
                             borderLeft: "1px solid #1c2017",
                           }}>
                           {post ? post.short : ""}
@@ -624,6 +628,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                       color: ok ? "#7fa86a" : "#ff7a5c",
                       fontWeight: ok ? 400 : 700,
                       background: ok ? "transparent" : "#3a1c14",
+                      boxShadow: d === filterDay ? "inset 0 0 0 2px #5fa8ff" : undefined,
                       borderLeft: "1px solid #1c2017",
                     }}>
                       {c.have}/{c.need}
