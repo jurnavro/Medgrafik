@@ -578,7 +578,7 @@ function DutyRoster() {
         ) : tab === "posts" ? (
           <PostsTab {...{ posts, setPosts }} />
         ) : (
-          <SummaryTab {...{ people, posts, monthSched, coverage, days, dutyCount, ym }} />
+          <SummaryTab {...{ people, posts, monthSched, dutyCount }} />
         )}
       </main>
 
@@ -1022,21 +1022,12 @@ function PostsTab({ posts, setPosts }) {
 
 /* ───────── Вкладка: Підсумки ───────── */
 
-function SummaryTab({ people, posts, monthSched, coverage, days, dutyCount, ym }) {
+function SummaryTab({ people, posts, monthSched, dutyCount }) {
   const byPost = (personId) => {
     const res = {};
     Object.values(monthSched[personId] || {}).forEach((pid) => { res[pid] = (res[pid] || 0) + 1; });
     return res;
   };
-
-  const gaps = posts.map((post) => {
-    const bad = [];
-    for (let d = 1; d <= days; d++) {
-      const c = coverage[post.id]?.[d];
-      if (c && c.missing.length) bad.push({ d, missing: c.missing });
-    }
-    return { post, bad };
-  }).filter((g) => g.bad.length);
 
   const active = people.filter((p) => p.active !== false);
   const counts = active.map((p) => dutyCount(p.id));
@@ -1044,22 +1035,6 @@ function SummaryTab({ people, posts, monthSched, coverage, days, dutyCount, ym }
 
   return (
     <div className="max-w-3xl">
-      {/* Незакриті зміни */}
-      <h2 className="font-bold mb-2">Незакриті зміни</h2>
-      {!gaps.length ? (
-        <p className="text-sm mb-5" style={{ color: "#7fa86a" }}>✓ Усі пости закриті щодня.</p>
-      ) : (
-        <div className="mb-5">
-          {gaps.map(({ post, bad }) => (
-            <div key={post.id} className="px-3 py-2 rounded-lg mb-1 text-sm" style={{ background: "#3a1c14", border: "1px solid #5a2c20" }}>
-              <span className="font-semibold" style={{ color: "#ff9a7c" }}>{post.name}</span>
-              <span style={{ color: "#c9a08f" }}> ({reqText(post)})</span> — не вистачає:{" "}
-              {bad.map(({ d, missing }) => `${d} число (${missing.join(", ")})`).join("; ")}
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Навантаження */}
       <h2 className="font-bold mb-2">Навантаження за місяць</h2>
       <div className="rounded-lg p-3" style={{ background: "#171b13", border: "1px solid #2a2f24" }}>
