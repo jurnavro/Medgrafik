@@ -66,6 +66,16 @@ const normReq = (post) => (post.req && typeof post.req === "object" ? post.req :
 const totalReq = (post) => Object.values(normReq(post)).reduce((s, n) => s + (Number(n) || 0), 0);
 const reqLabel = (key) => (key === ANY ? "Будь-хто" : key);
 
+/* мінімальна кількість людей, щоб ротаційно забезпечити склад посту на добу: для добових (24-год)
+   постів кожне місце в ротації потребує «зміна + відпочинок» днів, перш ніж повернеться той самий
+   склад; для недобових постів відпочинок не рахується — досить рівно стільки, скільки місць на добу */
+const peopleNeeded = (post, restDays) => {
+  const n = totalReq(post);
+  if (post.daily === false) return n;
+  const tour = Math.max(1, Number(post.tourDays) || 1);
+  return Math.ceil((n * (tour + Math.max(0, Number(restDays) || 0))) / tour);
+};
+
 /* вимоги до лікарів на посту: список груп {specialties: [...], count}. Кожна група — окрема вимога
    на N лікарів БУДЬ-ЯКОЇ зі спеціальностей у її списку (напр. {specialties:["Хірург","Травматолог"], count:1}
    означає «1 лікар — хірург або травматолог»). Кілька груп можна вимагати одночасно (напр. окрема група для
@@ -288,6 +298,12 @@ function DutyRoster() {
     return false;
   };
 
+  /* людина щойно (учора) відпрацювала добове (24-год) чергування — авторозподіл при виборі кандидата
+     на СЬОГОДНІ намагається дати їй вихідний і не ставить її в наряд, навіть на пост іншого типу
+     (не добовий), якщо є інший придатний кандидат без такого навантаження */
+  const justFinishedDaily = (sched, personId, day) =>
+    day - 1 >= 1 && hasDuty(sched, personId, day - 1) && isDailyPost(sched[personId][day - 1]);
+
   const coverage = useMemo(() => {
     // {postId: {day: {have, need, missing}}}
     const byDay = {}; // {postId: {day: [people]}}
@@ -329,7 +345,8 @@ function DutyRoster() {
     });
     let unfilled = 0;
 
-    const byRotation = (post) => (a, b) =>
+    const byRotation = (post, day) => (a, b) =>
+      (justFinishedDaily(sched, a.id, day) ? 1 : 0) - (justFinishedDaily(sched, b.id, day) ? 1 : 0) ||
       (postCounts[post.id][a.id] || 0) - (postCounts[post.id][b.id] || 0) ||
       counts[a.id] - counts[b.id] ||
       a.name.localeCompare(b.name, "uk");
@@ -342,7 +359,7 @@ function DutyRoster() {
         .filter((p) => role !== DOC_ROLE || !specialties || specialties.includes(p.specialty))
         .filter((p) => !hasDuty(sched, p.id, day))
         .filter((p) => !restConflict(sched, p.id, day, post.id))
-        .sort(byRotation(post));
+        .sort(byRotation(post, day));
       if (!cands.length) return false;
       const pick = cands[0];
       if (!sched[pick.id]) sched[pick.id] = {};
@@ -368,7 +385,7 @@ function DutyRoster() {
         // не ставити людину впритул до її ж власної зміни на цьому самому посту (ні до, ні після) —
         // інакше вона може отримати два терміни підряд без перерви між ними
         .filter((p) => sched[p.id]?.[dayFrom - 1] !== post.id && sched[p.id]?.[dayTo + 1] !== post.id)
-        .sort(byRotation(post));
+        .sort(byRotation(post, dayFrom));
       if (!cands.length) return false;
       const pick = cands[0];
       if (!sched[pick.id]) sched[pick.id] = {};
@@ -790,7 +807,7 @@ function DutyRoster() {
         ) : tab === "people" ? (
           <PeopleTab {...{ people, setPeople, posts, loadDemo }} />
         ) : tab === "posts" ? (
-          <PostsTab {...{ posts, setPosts }} />
+          <PostsTab {...{ posts, setPosts, restDays }} />
         ) : (
           <SummaryTab {...{ people, posts, monthSched, dutyCount }} />
         )}
@@ -1189,7 +1206,7 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
 
 /* ───────── Вкладка: Пости ───────── */
 
-function PostsTab({ posts, setPosts }) {
+function PostsTab({ posts, setPosts, restDays }) {
   const COLORS = ["#4a6b2f", "#2f6f9f", "#a8402f", "#2e8572", "#a87514", "#6b4a8a", "#8a6b2f", "#4a8a8a"];
   const update = (id, patch) => setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   const add = () => setPosts((prev) => [...prev, { id: uid(), name: "Новий пост", short: "НП", color: COLORS[prev.length % COLORS.length], req: { [ANY]: 1 }, daily: true }]);
@@ -1233,6 +1250,8 @@ function PostsTab({ posts, setPosts }) {
         Лікарські місця понад усі вимоги — будь-якої спеціальності.
         «Зміна, дн.» — на скільки днів поспіль ставиться одна й та сама людина, перш ніж заміна (наприклад, тиждень
         чи два тижні); авторозподіл і клік на клітинці графіка заповнюють увесь цей період одразу.
+        «Треба людей» — мінімальна кількість осіб, щоб ротаційно закрити цей склад, не порушуючи відпочинок
+        (налаштований на вкладці «Графік») між нарядами на добові пости.
       </p>
       {posts.map((p) => {
         const req = normReq(p);
@@ -1287,6 +1306,13 @@ function PostsTab({ posts, setPosts }) {
           </div>
           <div className="grow" />
           <span className="text-xs font-semibold" style={{ color: "#c9c7ba" }}>Разом: {totalReq(p)}</span>
+          <span className="text-xs font-semibold"
+            title={p.daily === false
+              ? "Недобовий пост — відпочинок не рахується, досить рівно стільки людей, скільки місць на добу"
+              : `Із розрахунку "зміна ${p.tourDays || 1} дн. + відпочинок ${restDays} дн." на кожне місце в складі, щоб не порушувати відпочинок між нарядами`}
+            style={{ color: "#8a9070" }}>
+            Треба людей: <b style={{ color: "#c9c7ba" }}>{peopleNeeded(p, restDays)}</b>
+          </span>
           <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
           <div className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 pt-1" style={{ borderTop: "1px solid #22271d" }}>
             <span className="text-xs uppercase tracking-wider" style={{ color: "#8a9070" }}>Склад на добу:</span>
