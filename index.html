@@ -263,8 +263,23 @@ function DutyRoster() {
   };
 
   const clearMonth = () => {
-    if (!confirm("Очистити всі чергування за цей місяць?")) return;
-    setSchedule((prev) => ({ ...prev, [ym]: {} }));
+    const fromDay = autoFromClamped;
+    const toDay = Math.min(days, fromDay + autoDaysClamped - 1);
+    const wholeMonth = fromDay === 1 && toDay === days;
+    const question = wholeMonth
+      ? "Очистити всі чергування за цей місяць?"
+      : `Очистити чергування з ${fromDay} по ${toDay} число?`;
+    if (!confirm(question)) return;
+    setSchedule((prev) => {
+      if (wholeMonth) return { ...prev, [ym]: {} };
+      const m = { ...(prev[ym] || {}) };
+      Object.keys(m).forEach((personId) => {
+        const row = { ...m[personId] };
+        for (let d = fromDay; d <= toDay; d++) delete row[d];
+        m[personId] = row;
+      });
+      return { ...prev, [ym]: m };
+    });
   };
 
   /* ── експорт CSV ── */
@@ -477,8 +492,8 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
             {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n} дн.</option>)}
           </select>
         </label>
-        <label className="text-xs flex items-center gap-1" style={{ color: "#8a9070" }}>
-          Розподілити з числа:
+        <label className="text-xs flex items-center gap-1" title="Діапазон днів для «Авторозподіл» і «Очистити»" style={{ color: "#8a9070" }}>
+          Діапазон днів — з числа:
           <input type="number" min={1} max={days} value={autoFrom}
             onChange={(e) => setAutoFrom(Math.min(days, Math.max(1, Number(e.target.value) || 1)))}
             className="rounded px-1 py-0.5 text-center" style={{ width: "3rem", background: "#1d2218", color: "#e8e6dd" }} />
@@ -497,7 +512,10 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
           className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>⤒ Зберегти дані</button>
         <ImportButton onFile={importData} label="⤓ Завантажити дані"
           className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }} />
-        <button onClick={clearMonth} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218", color: "#d08a7a" }}>Очистити</button>
+        <button onClick={clearMonth} title="Очищає той самий діапазон днів, що й авторозподіл"
+          className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218", color: "#d08a7a" }}>
+          {autoFrom === 1 && autoFrom + autoDays - 1 >= days ? "Очистити" : `Очистити з ${autoFrom}`}
+        </button>
       </div>
 
       <p className="text-xs mb-2 no-print" style={{ color: "#8a9070" }}>
