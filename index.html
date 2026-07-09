@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>body{margin:0;background:#10130e}</style>
 </head>
@@ -311,6 +312,149 @@ function DutyRoster() {
     URL.revokeObjectURL(a.href);
   };
 
+  /* ── експорт кольорового Excel (.xlsx), відтворює вигляд таблиці з програми ── */
+  const exportExcel = async () => {
+    if (typeof ExcelJS === "undefined") { notify("Не вдалося завантажити модуль Excel — перевір інтернет-з'єднання"); return; }
+    const [yy, mm] = ym.split("-").map(Number);
+    const dayCols = Array.from({ length: days }, (_, i) => i + 1);
+    const lastCol = 1 + dayCols.length + 1; // ПІБ + дні + Σ
+    const fill = (hex) => ({ type: "pattern", pattern: "solid", fgColor: { argb: "FF" + hex.replace("#", "").toUpperCase() } });
+    const thin = { style: "thin", color: { argb: "FFBFBFBF" } };
+    const border = { top: thin, left: thin, bottom: thin, right: thin };
+    const boxRow = (row) => row.eachCell({ includeEmpty: true }, (cell, col) => { if (col <= lastCol) cell.border = border; });
+
+    try {
+      const wb = new ExcelJS.Workbook();
+      wb.creator = "Медграфік";
+      wb.created = new Date();
+      const ws = wb.addWorksheet(`${MONTHS[mm - 1]} ${yy}`.slice(0, 31), { views: [{ state: "frozen", xSplit: 1, ySplit: 2 }] });
+
+      ws.mergeCells(1, 1, 1, lastCol);
+      const title = ws.getCell(1, 1);
+      title.value = `Графік чергувань — ${MONTHS[mm - 1]} ${yy}`;
+      title.font = { bold: true, size: 14 };
+      ws.getRow(1).height = 22;
+
+      const headerRow = ws.getRow(2);
+      headerRow.getCell(1).value = "ПІБ / звання";
+      dayCols.forEach((d, i) => {
+        const w = wdOf(ym, d);
+        const weekend = w === 0 || w === 6;
+        const cell = headerRow.getCell(2 + i);
+        cell.value = `${d}\n${WD[w]}`;
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        cell.font = { bold: true, color: { argb: weekend ? "FFB35C00" : "FF222222" } };
+      });
+      headerRow.getCell(lastCol).value = "Σ";
+      headerRow.eachCell({ includeEmpty: true }, (cell, col) => {
+        if (col > lastCol) return;
+        cell.fill = fill("f1efe6");
+        if (!cell.font) cell.font = { bold: true };
+        if (!cell.alignment) cell.alignment = { horizontal: "center", vertical: "middle" };
+      });
+      headerRow.getCell(1).alignment = { horizontal: "left", vertical: "middle" };
+      headerRow.height = 24;
+      boxRow(headerRow);
+
+      let r = 3;
+      const active = people.filter((p) => p.active !== false);
+
+      ROLES.forEach((role) => {
+        const group = active.filter((p) => p.role === role);
+        if (!group.length) return;
+        ws.mergeCells(r, 1, r, lastCol);
+        const gCell = ws.getCell(r, 1);
+        gCell.value = `${role} — ${group.length}`;
+        gCell.font = { bold: true, size: 10, color: { argb: "FF555C4A" } };
+        gCell.fill = fill("e4e2d6");
+        r++;
+
+        group.forEach((p) => {
+          const row = ws.getRow(r);
+          const nameCell = row.getCell(1);
+          nameCell.value = p.rank ? `${p.name}\n${p.rank}` : p.name;
+          nameCell.alignment = { wrapText: true, vertical: "middle" };
+          nameCell.font = { bold: true };
+          dayCols.forEach((d, i) => {
+            const pid = (monthSched[p.id] || {})[d];
+            const post = pid ? postById[pid] : null;
+            const cell = row.getCell(2 + i);
+            cell.alignment = { horizontal: "center", vertical: "middle" };
+            if (post) {
+              cell.value = post.short;
+              cell.fill = fill(post.color);
+              cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+            }
+          });
+          const sumCell = row.getCell(lastCol);
+          sumCell.value = dutyCount(p.id) || "";
+          sumCell.font = { bold: true };
+          sumCell.alignment = { horizontal: "center", vertical: "middle" };
+          boxRow(row);
+          row.height = 28;
+          r++;
+        });
+      });
+
+      ws.mergeCells(r, 1, r, lastCol);
+      const covHeader = ws.getCell(r, 1);
+      covHeader.value = "Покриття постів (є / треба)";
+      covHeader.font = { bold: true, size: 10, color: { argb: "FF555C4A" } };
+      covHeader.fill = fill("e4e2d6");
+      r++;
+
+      posts.forEach((post) => {
+        const row = ws.getRow(r);
+        const nameCell = row.getCell(1);
+        nameCell.value = `${post.name}\n${reqText(post)}`;
+        nameCell.alignment = { wrapText: true, vertical: "middle" };
+        nameCell.fill = fill(post.color);
+        nameCell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        dayCols.forEach((d, i) => {
+          const c = coverage[post.id]?.[d] || { have: 0, need: totalReq(post), missing: [] };
+          const ok = !c.missing.length;
+          const cell = row.getCell(2 + i);
+          cell.value = `${c.have}/${c.need}`;
+          cell.alignment = { horizontal: "center", vertical: "middle" };
+          if (!ok) {
+            cell.fill = fill("c0392b");
+            cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+          } else {
+            cell.font = { color: { argb: "FF3F7A2F" } };
+          }
+        });
+        boxRow(row);
+        row.height = 26;
+        r++;
+      });
+
+      r++;
+      ws.mergeCells(r, 1, r, lastCol);
+      const legendCell = ws.getCell(r, 1);
+      legendCell.value = "Умовні позначення: " + posts.map((p) => `${p.short} — ${p.name} (${reqText(p)})`).join("; ") + ".";
+      legendCell.font = { italic: true, size: 9, color: { argb: "FF555C4A" } };
+      legendCell.alignment = { wrapText: true };
+
+      ws.getColumn(1).width = 26;
+      dayCols.forEach((d, i) => { ws.getColumn(2 + i).width = 4.5; });
+      ws.getColumn(lastCol).width = 6;
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      const [y2, m2] = ym.split("-");
+      a.download = `график_чергувань_${m2}_${y2}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      notify("Excel-файл сформовано");
+    } catch (e) {
+      console.error("Не вдалося сформувати Excel", e);
+      notify("Не вдалося сформувати Excel-файл");
+    }
+  };
+
   const loadDemo = () => {
     setPeople(DEMO_PEOPLE.map((p) => ({ ...p, id: uid(), active: true })));
     notify("Додано приклад особового складу — відредагуй під свій підрозділ");
@@ -424,7 +568,7 @@ function DutyRoster() {
         {!loaded ? (
           <div className="text-center py-16" style={{ color: "#8a9070" }}>Завантаження…</div>
         ) : tab === "grid" ? (
-          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, colorPrint, setColorPrint, autoFrom: autoFromClamped, setAutoFrom, autoDays: autoDaysClamped, setAutoDays, filterDay, setFilterDay, exportData, importData }} />
+          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, exportExcel, postById, isToday, loadDemo, restDays, setRestDays, colorPrint, setColorPrint, autoFrom: autoFromClamped, setAutoFrom, autoDays: autoDaysClamped, setAutoDays, filterDay, setFilterDay, exportData, importData }} />
         ) : tab === "people" ? (
           <PeopleTab {...{ people, setPeople, posts, loadDemo }} />
         ) : tab === "posts" ? (
@@ -457,7 +601,7 @@ function ImportButton({ onFile, label, className, style }) {
   );
 }
 
-function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, colorPrint, setColorPrint, autoFrom, setAutoFrom, autoDays, setAutoDays, filterDay, setFilterDay, exportData, importData }) {
+function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, exportExcel, postById, isToday, loadDemo, restDays, setRestDays, colorPrint, setColorPrint, autoFrom, setAutoFrom, autoDays, setAutoDays, filterDay, setFilterDay, exportData, importData }) {
   if (!people.length) {
     return (
       <div className="text-center py-16">
@@ -533,6 +677,8 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
           ⚙ Авторозподіл
         </button>
         <button onClick={exportCsv} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>CSV</button>
+        <button onClick={exportExcel} title="Кольоровий, відформатований файл .xlsx — вигляд як у програмі"
+          className="px-3 py-1.5 rounded-lg text-sm font-semibold" style={{ background: "#217346", color: "#fff" }}>⊞ Excel</button>
         <label className="text-xs flex items-center gap-1" title="Зберегти кольори постів на роздрукованій таблиці замість чорно-білого варіанту" style={{ color: "#8a9070" }}>
           <input type="checkbox" checked={colorPrint} onChange={(e) => setColorPrint(e.target.checked)} />
           Кольоровий друк
