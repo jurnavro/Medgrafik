@@ -64,31 +64,77 @@ const shiftYm = (ym, k) => { const [y, m] = ym.split("-").map(Number); const d =
 /* вимоги поста: {категорія|any: кількість}; старі дані мали лише slots */
 const normReq = (post) => (post.req && typeof post.req === "object" ? post.req : { [ANY]: post.slots || 1 });
 const totalReq = (post) => Object.values(normReq(post)).reduce((s, n) => s + (Number(n) || 0), 0);
-const reqLabel = (key, post) => {
-  if (key === ANY) return "Будь-хто";
-  if (key === DOC_ROLE && post && post.docSpecialty) return `${key} (${post.docSpecialty})`;
-  return key;
-};
-const reqText = (post) =>
-  Object.entries(normReq(post)).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${reqLabel(k, post)}`).join(" · ");
+const reqLabel = (key) => (key === ANY ? "Будь-хто" : key);
 
-/* лікар підходить під вимогу поста лише якщо збігається вказана спеціальність (якщо вона задана) */
-const doctorSpecialtyOk = (post, p) =>
-  p.role !== DOC_ROLE || !post.docSpecialty || p.specialty === post.docSpecialty;
+/* вимоги до спеціальності лікарів на посту: {спеціальність: кількість} — можна вимагати кількох різних
+   спеціальностей одночасно (напр. 1 хірург + 1 терапевт); решта лікарських місць — будь-яка спеціальність */
+const normDocSpecReq = (post) => (post.docSpecReq && typeof post.docSpecReq === "object" ? post.docSpecReq : {});
+
+const reqText = (post) => {
+  const req = normReq(post);
+  const specReq = normDocSpecReq(post);
+  const specSum = Object.values(specReq).reduce((s, n) => s + (Number(n) || 0), 0);
+  const parts = [];
+  Object.entries(req).filter(([, n]) => n > 0).forEach(([k, n]) => {
+    if (k === DOC_ROLE) {
+      Object.entries(specReq).forEach(([spec, sn]) => { if (sn > 0) parts.push(`${sn} Лікар (${spec})`); });
+      const rest = n - specSum;
+      if (rest > 0) parts.push(`${rest} Лікар`);
+    } else {
+      parts.push(`${n} ${reqLabel(k)}`);
+    }
+  });
+  return parts.join(" · ");
+};
+
+/* докладний розрахунок покриття поста: спершу лікарів розподіляють по конкретних вимогах до спеціальності
+   (кожна — окремо), а решту призначених — по звичайних категоріях; хто не поміщається — «зайві» (йдуть у будь-хто) */
+const computeCoverage = (post, assigned) => {
+  const left = { ...normReq(post) };
+  const specLeft = { ...normDocSpecReq(post) };
+  let extra = 0;
+  const used = new Set();
+  assigned.forEach((p, i) => {
+    if (p.role === DOC_ROLE && p.specialty && specLeft[p.specialty] > 0 && left[DOC_ROLE] > 0) {
+      specLeft[p.specialty]--;
+      left[DOC_ROLE]--;
+      used.add(i);
+    }
+  });
+  assigned.forEach((p, i) => {
+    if (used.has(i)) return;
+    if (left[p.role] > 0) left[p.role]--;
+    else extra++;
+  });
+  left[ANY] = Math.max(0, (left[ANY] || 0) - extra);
+  return { left, specLeft };
+};
 
 /* скільки і кого бракує на посту в конкретний день */
 const evalCoverage = (post, assigned) => {
-  const left = { ...normReq(post) };
-  let extra = 0;
-  assigned.forEach((p) => {
-    if (left[p.role] > 0 && doctorSpecialtyOk(post, p)) left[p.role]--;
-    else extra++; // зайві за категорією (або лікар не тієї спеціальності) йдуть у місця «будь-хто»
-  });
-  const anyShort = Math.max(0, (left[ANY] || 0) - extra);
+  const { left, specLeft } = computeCoverage(post, assigned);
+  const specLeftSum = Object.values(specLeft).reduce((s, n) => s + Math.max(0, n), 0);
   const missing = [];
-  ROLES.forEach((r) => { if (left[r] > 0) missing.push(`${left[r]} ${reqLabel(r, post)}`); });
-  if (anyShort > 0) missing.push(`${anyShort} будь-хто`);
+  Object.entries(specLeft).forEach(([spec, n]) => { if (n > 0) missing.push(`${n} Лікар (${spec})`); });
+  ROLES.forEach((r) => {
+    if (r === DOC_ROLE) {
+      const rest = left[DOC_ROLE] - specLeftSum;
+      if (rest > 0) missing.push(`${rest} Лікар`);
+      return;
+    }
+    if (left[r] > 0) missing.push(`${left[r]} ${r}`);
+  });
+  if (left[ANY] > 0) missing.push(`${left[ANY]} будь-хто`);
   return { have: assigned.length, need: totalReq(post), missing };
+};
+
+/* сумісність зі старими збереженими даними: slots -> req, одна спеціальність лікаря (docSpecialty) -> докладна вимога (docSpecReq) */
+const migratePost = (p) => {
+  const post = p.req ? p : { ...p, req: { [ANY]: p.slots || 1 } };
+  if (!post.docSpecReq && post.docSpecialty) {
+    return { ...post, docSpecReq: { [post.docSpecialty]: normReq(post)[DOC_ROLE] || 1 } };
+  }
+  return post;
 };
 
 const STORAGE_KEY = "medrota-duty-v1";
@@ -121,7 +167,7 @@ function DutyRoster() {
       if (r) {
         const d = JSON.parse(r);
         if (d.people) setPeople(d.people);
-        if (d.posts) setPosts(d.posts.map((p) => (p.req ? p : { ...p, req: { [ANY]: p.slots || 1 } })));
+        if (d.posts) setPosts(d.posts.map(migratePost));
         if (d.schedule) setSchedule(d.schedule);
         if (d.restDays != null) setRestDays(d.restDays);
         if (d.autoFrom != null) setAutoFrom(d.autoFrom);
@@ -244,11 +290,11 @@ function DutyRoster() {
     people.forEach((p) => { counts[p.id] = Object.keys(sched[p.id] || {}).length; });
     let unfilled = 0;
 
-    const pickFor = (post, day, role) => {
+    const pickFor = (post, day, role, specialty) => {
       const cands = people
         .filter((p) => p.active !== false && p.posts.includes(post.id))
         .filter((p) => !role || p.role === role)
-        .filter((p) => role !== DOC_ROLE || doctorSpecialtyOk(post, p))
+        .filter((p) => role !== DOC_ROLE || !specialty || p.specialty === specialty)
         .filter((p) => !hasDuty(sched, p.id, day))
         .filter((p) => !restConflict(sched, p.id, day, post.id))
         .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
@@ -261,11 +307,11 @@ function DutyRoster() {
     };
 
     /* та сама людина закриває весь блок днів «зміни» посту (напр. цілий тиждень) */
-    const pickForRange = (post, dayFrom, dayTo, role) => {
+    const pickForRange = (post, dayFrom, dayTo, role, specialty) => {
       const cands = people
         .filter((p) => p.active !== false && p.posts.includes(post.id))
         .filter((p) => !role || p.role === role)
-        .filter((p) => role !== DOC_ROLE || doctorSpecialtyOk(post, p))
+        .filter((p) => role !== DOC_ROLE || !specialty || p.specialty === specialty)
         .filter((p) => {
           for (let d = dayFrom; d <= dayTo; d++) {
             if (hasDuty(sched, p.id, d) || restConflict(sched, p.id, d, post.id)) return false;
@@ -281,18 +327,10 @@ function DutyRoster() {
       return true;
     };
 
-    // скільки ще треба з урахуванням уже проставленого
+    // скільки ще треба з урахуванням уже проставленого (по категоріях і по спеціальностях лікарів)
     const leftFor = (post, day) => {
-      const left = { ...normReq(post) };
-      let extra = 0;
-      people.forEach((p) => {
-        if (sched[p.id] && sched[p.id][day] === post.id) {
-          if (left[p.role] > 0 && doctorSpecialtyOk(post, p)) left[p.role]--;
-          else extra++;
-        }
-      });
-      left[ANY] = Math.max(0, (left[ANY] || 0) - extra);
-      return left;
+      const assigned = people.filter((p) => sched[p.id] && sched[p.id][day] === post.id);
+      return computeCoverage(post, assigned);
     };
 
     const tourOf = (post) => Math.max(1, Number(post.tourDays) || 1);
@@ -302,34 +340,47 @@ function DutyRoster() {
     // пости з багатоденною зміною: одна людина/команда закриває весь блок днів одразу
     tourPosts.forEach((post) => {
       const tour = tourOf(post);
+      const specNeed = normDocSpecReq(post);
+      const specSum = Object.values(specNeed).reduce((s, n) => s + Math.max(0, n), 0);
       for (let blockStart = fromDay; blockStart <= toDay; blockStart += tour) {
         const blockEnd = Math.min(toDay, blockStart + tour - 1);
         const need = { ...normReq(post) };
+        Object.entries(specNeed).forEach(([spec, n]) => {
+          for (let k = n; k > 0; k--) {
+            if (!pickForRange(post, blockStart, blockEnd, DOC_ROLE, spec)) unfilled += blockEnd - blockStart + 1;
+          }
+        });
         ROLES.forEach((role) => {
-          for (let k = need[role] || 0; k > 0; k--) {
-            if (!pickForRange(post, blockStart, blockEnd, role)) unfilled += blockEnd - blockStart + 1;
+          const k0 = (need[role] || 0) - (role === DOC_ROLE ? specSum : 0);
+          for (let k = k0; k > 0; k--) {
+            if (!pickForRange(post, blockStart, blockEnd, role, null)) unfilled += blockEnd - blockStart + 1;
           }
         });
         for (let k = need[ANY] || 0; k > 0; k--) {
-          if (!pickForRange(post, blockStart, blockEnd, null)) unfilled += blockEnd - blockStart + 1;
+          if (!pickForRange(post, blockStart, blockEnd, null, null)) unfilled += blockEnd - blockStart + 1;
         }
       }
     });
 
-    // пас 1: місця з вимогою категорії — фахівці дефіцитніші, їх ставимо першими
+    // пас 1: місця з вимогою категорії/спеціальності — дефіцитніші, їх ставимо першими
     dayByDayPosts.forEach((post) => {
       for (let day = fromDay; day <= toDay; day++) {
-        const left = leftFor(post, day);
+        const { left, specLeft } = leftFor(post, day);
+        const specLeftSum = Object.values(specLeft).reduce((s, n) => s + Math.max(0, n), 0);
+        Object.entries(specLeft).forEach(([spec, n]) => {
+          for (let k = n; k > 0; k--) if (!pickFor(post, day, DOC_ROLE, spec)) unfilled++;
+        });
         ROLES.forEach((role) => {
-          for (let k = left[role] || 0; k > 0; k--) if (!pickFor(post, day, role)) unfilled++;
+          const k0 = (left[role] || 0) - (role === DOC_ROLE ? specLeftSum : 0);
+          for (let k = k0; k > 0; k--) if (!pickFor(post, day, role, null)) unfilled++;
         });
       }
     });
     // пас 2: місця «будь-хто»
     dayByDayPosts.forEach((post) => {
       for (let day = fromDay; day <= toDay; day++) {
-        const left = leftFor(post, day);
-        for (let k = left[ANY]; k > 0; k--) if (!pickFor(post, day, null)) unfilled++;
+        const { left } = leftFor(post, day);
+        for (let k = left[ANY]; k > 0; k--) if (!pickFor(post, day, null, null)) unfilled++;
       }
     });
 
@@ -551,7 +602,7 @@ function DutyRoster() {
         if (!d || !Array.isArray(d.people)) throw new Error("bad format");
         if (people.length && !confirm("Замінити поточні дані даними з файлу?")) return;
         setPeople(d.people);
-        setPosts((d.posts || DEFAULT_POSTS).map((p) => (p.req ? p : { ...p, req: { [ANY]: p.slots || 1 } })));
+        setPosts((d.posts || DEFAULT_POSTS).map(migratePost));
         setSchedule(d.schedule || {});
         if (d.restDays != null) setRestDays(d.restDays);
         notify("Дані завантажено з файлу");
@@ -1057,6 +1108,14 @@ function PostsTab({ posts, setPosts }) {
     update(p.id, { req });
   };
 
+  const setSpecReq = (p, spec, value) => {
+    const n = Math.max(0, Math.min(9, Number(value) || 0));
+    const docSpecReq = { ...normDocSpecReq(p) };
+    if (n === 0) delete docSpecReq[spec];
+    else docSpecReq[spec] = n;
+    update(p.id, { docSpecReq });
+  };
+
   return (
     <div className="max-w-4xl">
       <p className="text-sm mb-3" style={{ color: "#8a9070" }}>
@@ -1064,8 +1123,9 @@ function PostsTab({ posts, setPosts }) {
         Це використовують авторозподіл і контроль покриття.
         «Добовий» — пост повного (24-год) чергування: авторозподіл і перевірка відпочинку (вкладка «Графік») враховують
         лише такі пости, щоб людина не йшла на добове чергування частіше, ніж дозволяє налаштований відпочинок.
-        Якщо в складі є «Лікар», можна вказати спеціальність — тоді на пост ставитимуться лише лікарі з такою
-        спеціальністю (позначається на вкладці «Особовий склад»); «Будь-який» знімає обмеження.
+        Якщо в складі є «Лікар», можна вказати, скільки лікарів кожної спеціальності потрібно одночасно (наприклад,
+        1 хірург і 1 терапевт на тому самому посту) — спеціальність лікаря вказується на вкладці «Особовий склад».
+        Лікарські місця понад вказану спеціальність — будь-якої спеціальності.
         «Зміна, дн.» — на скільки днів поспіль ставиться одна й та сама людина, перш ніж заміна (наприклад, тиждень
         чи два тижні); авторозподіл і клік на клітинці графіка заповнюють увесь цей період одразу.
       </p>
@@ -1129,7 +1189,7 @@ function PostsTab({ posts, setPosts }) {
               const n = req[key] || 0;
               return (
                 <label key={key} className="text-xs flex items-center gap-1" style={{ color: n > 0 ? "#e8e6dd" : "#555c4a" }}>
-                  {reqLabel(key, p)}
+                  {reqLabel(key)}
                   <input type="number" min={0} max={9} value={n}
                     onChange={(e) => setReq(p, key, e.target.value)}
                     className="px-1 py-0.5 rounded w-11 text-center"
@@ -1143,31 +1203,44 @@ function PostsTab({ posts, setPosts }) {
               );
             })}
           </div>
-          {(req[DOC_ROLE] || 0) > 0 && (
-            <div className="w-full flex flex-wrap items-center gap-1 pt-1" style={{ borderTop: "1px solid #22271d" }}>
-              <span className="text-xs uppercase tracking-wider mr-1" style={{ color: "#8a9070" }}>Спеціальність лікаря:</span>
-              <button onClick={() => update(p.id, { docSpecialty: "" })}
-                className="px-2 py-1 rounded text-xs font-semibold"
-                style={{
-                  background: !p.docSpecialty ? p.color : "#10130e",
-                  color: !p.docSpecialty ? "#fff" : "#777d68",
-                  border: `1px solid ${!p.docSpecialty ? p.color : "#2a2f24"}`,
-                }}>
-                Будь-який
-              </button>
-              {SPECIALTIES.map((s) => (
-                <button key={s} onClick={() => update(p.id, { docSpecialty: s })}
-                  className="px-2 py-1 rounded text-xs font-semibold"
-                  style={{
-                    background: p.docSpecialty === s ? p.color : "#10130e",
-                    color: p.docSpecialty === s ? "#fff" : "#777d68",
-                    border: `1px solid ${p.docSpecialty === s ? p.color : "#2a2f24"}`,
-                  }}>
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
+          {(req[DOC_ROLE] || 0) > 0 && (() => {
+            const specReq = normDocSpecReq(p);
+            const specSum = Object.values(specReq).reduce((s, n) => s + (Number(n) || 0), 0);
+            const rest = req[DOC_ROLE] - specSum;
+            return (
+              <div className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 pt-1" style={{ borderTop: "1px solid #22271d" }}>
+                <span className="text-xs uppercase tracking-wider" style={{ color: "#8a9070" }}>
+                  Спеціальність лікарів (з {req[DOC_ROLE]}):
+                </span>
+                {SPECIALTIES.map((s) => {
+                  const n = specReq[s] || 0;
+                  return (
+                    <label key={s} className="text-xs flex items-center gap-1" style={{ color: n > 0 ? "#e8e6dd" : "#555c4a" }}>
+                      {s}
+                      <input type="number" min={0} max={9} value={n}
+                        onChange={(e) => setSpecReq(p, s, e.target.value)}
+                        className="px-1 py-0.5 rounded w-11 text-center"
+                        style={{
+                          background: "#10130e",
+                          border: `1px solid ${n > 0 ? p.color : "#2a2f24"}`,
+                          color: n > 0 ? "#e8e6dd" : "#555c4a",
+                          fontWeight: n > 0 ? 700 : 400,
+                        }} />
+                    </label>
+                  );
+                })}
+                <span className="text-xs" style={{ color: rest < 0 ? "#ff9a7c" : "#8a9070" }}>
+                  {specSum === 0
+                    ? "Без обмежень — будь-який лікар"
+                    : rest > 0
+                    ? `+ ${rest} будь-якої спеціальності`
+                    : rest < 0
+                    ? `забагато на ${-rest} — перевищує кількість лікарів на посту`
+                    : "розподілено повністю"}
+                </span>
+              </div>
+            );
+          })()}
         </div>
         );
       })}
