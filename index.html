@@ -92,6 +92,7 @@ function DutyRoster() {
   const [posts, setPosts] = useState(DEFAULT_POSTS);
   const [schedule, setSchedule] = useState({}); // {ym: {personId: {day: postId}}}
   const [restDays, setRestDays] = useState(2);
+  const [colorPrint, setColorPrint] = useState(false); // друк/експорт зі збереженням кольорів постів
   const [tool, setTool] = useState(DEFAULT_POSTS[0].id); // обраний пост або "erase"
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
@@ -374,6 +375,21 @@ function DutyRoster() {
           .grid-wrap th div, .grid-wrap td div { color: #000 !important; }
           .grid-wrap th div + div, .grid-wrap td div + div { font-size: 6px !important; }
           .grid-wrap .print-group { background: #e0e0e0 !important; padding: 0 2px !important; }
+          /* Кольоровий друк — клітинки з нарядами й нестачею зберігають кольори, як у програмі */
+          .grid-wrap td.cell.pcolor, .grid-wrap td.covcell.pcolor {
+            background: var(--pcolor) !important;
+            color: #fff !important;
+            border-color: #555 !important;
+          }
+          .legend-swatch {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            margin-right: 3px;
+            border: 0.5pt solid #000;
+            vertical-align: middle;
+          }
+          .legend-swatch.pcolor { background: var(--pcolor) !important; border-color: #555 !important; }
         }
         .cell:hover { outline: 2px solid #e8e6dd55; outline-offset: -2px; }
         ::-webkit-scrollbar { height: 10px; width: 10px; }
@@ -408,7 +424,7 @@ function DutyRoster() {
         {!loaded ? (
           <div className="text-center py-16" style={{ color: "#8a9070" }}>Завантаження…</div>
         ) : tab === "grid" ? (
-          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoFrom: autoFromClamped, setAutoFrom, autoDays: autoDaysClamped, setAutoDays, filterDay, setFilterDay, exportData, importData }} />
+          <GridTab {...{ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, colorPrint, setColorPrint, autoFrom: autoFromClamped, setAutoFrom, autoDays: autoDaysClamped, setAutoDays, filterDay, setFilterDay, exportData, importData }} />
         ) : tab === "people" ? (
           <PeopleTab {...{ people, setPeople, posts, loadDemo }} />
         ) : tab === "posts" ? (
@@ -441,7 +457,7 @@ function ImportButton({ onFile, label, className, style }) {
   );
 }
 
-function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, autoFrom, setAutoFrom, autoDays, setAutoDays, filterDay, setFilterDay, exportData, importData }) {
+function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, postById, isToday, loadDemo, restDays, setRestDays, colorPrint, setColorPrint, autoFrom, setAutoFrom, autoDays, setAutoDays, filterDay, setFilterDay, exportData, importData }) {
   if (!people.length) {
     return (
       <div className="text-center py-16">
@@ -517,6 +533,10 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
           ⚙ Авторозподіл
         </button>
         <button onClick={exportCsv} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>CSV</button>
+        <label className="text-xs flex items-center gap-1" title="Зберегти кольори постів на роздрукованій таблиці замість чорно-білого варіанту" style={{ color: "#8a9070" }}>
+          <input type="checkbox" checked={colorPrint} onChange={(e) => setColorPrint(e.target.checked)} />
+          Кольоровий друк
+        </label>
         <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>Друк</button>
         <button onClick={exportData} title="Зберегти всі дані у файл — для передачі чи резервної копії"
           className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>⤒ Зберегти дані</button>
@@ -584,7 +604,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                       const weekend = w === 0 || w === 6;
                       return (
                         <td key={d} onClick={() => cellClick(p.id, d)}
-                          className="cell text-center cursor-pointer select-none"
+                          className={"cell text-center cursor-pointer select-none" + (colorPrint && post ? " pcolor" : "")}
                           title={post ? `${post.name}${conflict ? " — порушено відпочинок" : ""}` : ""}
                           style={{
                             background: post ? post.color : weekend ? "#161a12" : "transparent",
@@ -597,6 +617,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                               d === filterDay ? "inset 0 0 0 2px #5fa8ff" : null,
                             ].filter(Boolean).join(", ") || undefined,
                             borderLeft: "1px solid #1c2017",
+                            ...(colorPrint && post ? { "--pcolor": post.color } : null),
                           }}>
                           {post ? post.short : ""}
                         </td>
@@ -622,7 +643,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                   const c = coverage[post.id]?.[d] || { have: 0, need: totalReq(post), missing: [] };
                   const ok = !c.missing.length;
                   return (
-                    <td key={d} className="text-center" title={ok ? "" : `Бракує: ${c.missing.join(", ")}`} style={{
+                    <td key={d} className={"text-center covcell" + (colorPrint && !ok ? " pcolor" : "")} title={ok ? "" : `Бракує: ${c.missing.join(", ")}`} style={{
                       fontSize: "10px",
                       height: "22px",
                       color: ok ? "#7fa86a" : "#ff7a5c",
@@ -630,6 +651,7 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
                       background: ok ? "transparent" : "#3a1c14",
                       boxShadow: d === filterDay ? "inset 0 0 0 2px #5fa8ff" : undefined,
                       borderLeft: "1px solid #1c2017",
+                      ...(colorPrint && !ok ? { "--pcolor": "#c0392b" } : null),
                     }}>
                       {c.have}/{c.need}
                     </td>
@@ -644,7 +666,15 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
 
       {/* Легенда лише для друку */}
       <div className="print-only" style={{ marginTop: "4px", fontSize: "7pt" }}>
-        <div>Умовні позначення: {posts.map((p) => `${p.short} — ${p.name} (${reqText(p)})`).join("; ")}.</div>
+        <div>
+          Умовні позначення:{" "}
+          {posts.map((p, i) => (
+            <span key={p.id}>
+              <span className={"legend-swatch" + (colorPrint ? " pcolor" : "")} style={colorPrint ? { "--pcolor": p.color } : null} />
+              {p.short} — {p.name} ({reqText(p)}){i < posts.length - 1 ? "; " : "."}
+            </span>
+          ))}
+        </div>
         <div style={{ marginTop: "8px" }}>Склав: ______________________ &nbsp;&nbsp;&nbsp; Дата: «____» ____________ {py} р.</div>
       </div>
     </div>
