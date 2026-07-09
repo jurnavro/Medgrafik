@@ -96,6 +96,10 @@ function DutyRoster() {
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
   const saveTimer = useRef(null);
+  const isCurrentMonth = ym === ymOf(today);
+  const [autoFrom, setAutoFrom] = useState(isCurrentMonth ? today.getDate() : 1);
+  const [autoDays, setAutoDays] = useState(daysIn(ym) - (isCurrentMonth ? today.getDate() - 1 : 0));
+  const prevYmRef = useRef(ym);
 
   /* завантаження */
   useEffect(() => {
@@ -107,6 +111,8 @@ function DutyRoster() {
         if (d.posts) setPosts(d.posts.map((p) => (p.req ? p : { ...p, req: { [ANY]: p.slots || 1 } })));
         if (d.schedule) setSchedule(d.schedule);
         if (d.restDays != null) setRestDays(d.restDays);
+        if (d.autoFrom != null) setAutoFrom(d.autoFrom);
+        if (d.autoDays != null) setAutoDays(d.autoDays);
       }
     } catch (e) { /* перший запуск — даних ще немає */ }
     setLoaded(true);
@@ -118,19 +124,20 @@ function DutyRoster() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ people, posts, schedule, restDays }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ people, posts, schedule, restDays, autoFrom, autoDays }));
       } catch (e) { console.error("Не вдалося зберегти", e); }
     }, 600);
     return () => clearTimeout(saveTimer.current);
-  }, [people, posts, schedule, restDays, loaded]);
+  }, [people, posts, schedule, restDays, autoFrom, autoDays, loaded]);
 
   const notify = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); };
 
   const days = daysIn(ym);
-  const isCurrentMonth = ym === ymOf(today);
-  const [autoFrom, setAutoFrom] = useState(isCurrentMonth ? today.getDate() : 1);
-  const [autoDays, setAutoDays] = useState(days - (isCurrentMonth ? today.getDate() - 1 : 0));
+  /* при переході на інший місяць (а не при першому завантаженні сторінки,
+     щоб не затерти збережений користувачем вибір) пропонуємо нові значення за замовчуванням */
   useEffect(() => {
+    if (prevYmRef.current === ym) return;
+    prevYmRef.current = ym;
     const t = new Date();
     const start = ymOf(t) === ym ? t.getDate() : 1;
     setAutoFrom(start);
