@@ -87,11 +87,20 @@ const reqText = (post) => {
   return parts.join(" · ");
 };
 
+/* якщо пост одночасно вимагає і конкретних лікарів, і «будь-кого» — лікарі понад лікарську квоту
+   не повинні йти закривати місця «будь-хто» (їх краще лишити для інших постів, де вони теж лікарі) */
+const anyExcludesDoctors = (post) => {
+  const req = normReq(post);
+  return (req[DOC_ROLE] || 0) > 0 && (req[ANY] || 0) > 0;
+};
+
 /* докладний розрахунок покриття поста: спершу лікарів розподіляють по конкретних вимогах до спеціальності
-   (кожна — окремо), а решту призначених — по звичайних категоріях; хто не поміщається — «зайві» (йдуть у будь-хто) */
+   (кожна — окремо), а решту призначених — по звичайних категоріях; хто не поміщається — «зайві» (йдуть у будь-хто,
+   окрім лікарів понад квоту на посту, що вимагає і лікарів, і будь-кого) */
 const computeCoverage = (post, assigned) => {
   const left = { ...normReq(post) };
   const specLeft = { ...normDocSpecReq(post) };
+  const excludeDoctors = anyExcludesDoctors(post);
   let extra = 0;
   const used = new Set();
   assigned.forEach((p, i) => {
@@ -103,8 +112,9 @@ const computeCoverage = (post, assigned) => {
   });
   assigned.forEach((p, i) => {
     if (used.has(i)) return;
-    if (left[p.role] > 0) left[p.role]--;
-    else extra++;
+    if (left[p.role] > 0) { left[p.role]--; return; }
+    if (p.role === DOC_ROLE && excludeDoctors) return;
+    extra++;
   });
   left[ANY] = Math.max(0, (left[ANY] || 0) - extra);
   return { left, specLeft };
@@ -310,6 +320,7 @@ function DutyRoster() {
       const cands = people
         .filter((p) => p.active !== false && p.posts.includes(post.id))
         .filter((p) => !role || p.role === role)
+        .filter((p) => role || p.role !== DOC_ROLE || !anyExcludesDoctors(post))
         .filter((p) => role !== DOC_ROLE || !specialty || p.specialty === specialty)
         .filter((p) => !hasDuty(sched, p.id, day))
         .filter((p) => !restConflict(sched, p.id, day, post.id))
@@ -328,6 +339,7 @@ function DutyRoster() {
       const cands = people
         .filter((p) => p.active !== false && p.posts.includes(post.id))
         .filter((p) => !role || p.role === role)
+        .filter((p) => role || p.role !== DOC_ROLE || !anyExcludesDoctors(post))
         .filter((p) => role !== DOC_ROLE || !specialty || p.specialty === specialty)
         .filter((p) => {
           for (let d = dayFrom; d <= dayTo; d++) {
