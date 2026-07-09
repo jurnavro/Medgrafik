@@ -347,6 +347,9 @@ function DutyRoster() {
           }
           return true;
         })
+        // не ставити людину впритул до її ж власної зміни на цьому самому посту (ні до, ні після) —
+        // інакше вона може отримати два терміни підряд без перерви між ними
+        .filter((p) => sched[p.id]?.[dayFrom - 1] !== post.id && sched[p.id]?.[dayTo + 1] !== post.id)
         .sort(byRotation(post));
       if (!cands.length) return false;
       const pick = cands[0];
@@ -374,16 +377,14 @@ function DutyRoster() {
     const prevSched = schedule[prevYm] || {};
     const prevDays = daysIn(prevYm);
 
-    // пости з багатоденною зміною: одна людина/команда закриває весь блок днів одразу
+    // пости з багатоденною зміною: одна людина/команда закриває блок днів одразу, але не чіпає дні,
+    // де для цього посту вже є будь-яке призначення (ручне чи з попереднього прогону) — заповнюються
+    // лише прогалини (і лише те, чого справді бракує), розміром не довшим за тривалість зміни
     tourPosts.forEach((post) => {
       const tour = tourOf(post);
-      const specNeed = normDocSpecReq(post);
-      const specSum = Object.values(specNeed).reduce((s, n) => s + Math.max(0, n), 0);
 
       // донести з минулого місяця незавершену зміну тим самим людям, перш ніж починати нову ротацію
-      let firstBlockStart = fromDay;
       if (fromDay === 1) {
-        let carryEnd = 0;
         people.forEach((p) => {
           if (p.active === false || !p.posts.includes(post.id)) return;
           const row = prevSched[p.id] || {};
@@ -399,28 +400,42 @@ function DutyRoster() {
           }
           counts[p.id] = (counts[p.id] || 0) + remaining;
           postCounts[post.id][p.id] = (postCounts[post.id][p.id] || 0) + remaining;
-          carryEnd = Math.max(carryEnd, remaining);
         });
-        if (carryEnd > 0) firstBlockStart = carryEnd + 1;
       }
 
-      for (let blockStart = firstBlockStart; blockStart <= toDay; blockStart += tour) {
-        const blockEnd = Math.min(toDay, blockStart + tour - 1);
-        const need = { ...normReq(post) };
-        Object.entries(specNeed).forEach(([spec, n]) => {
-          for (let k = n; k > 0; k--) {
-            if (!pickForRange(post, blockStart, blockEnd, DOC_ROLE, spec)) unfilled += blockEnd - blockStart + 1;
-          }
-        });
-        ROLES.forEach((role) => {
-          const k0 = (need[role] || 0) - (role === DOC_ROLE ? specSum : 0);
-          for (let k = k0; k > 0; k--) {
-            if (!pickForRange(post, blockStart, blockEnd, role, null)) unfilled += blockEnd - blockStart + 1;
-          }
-        });
-        for (let k = need[ANY] || 0; k > 0; k--) {
-          if (!pickForRange(post, blockStart, blockEnd, null, null)) unfilled += blockEnd - blockStart + 1;
+      let day = fromDay;
+      while (day <= toDay) {
+        const cov = leftFor(post, day);
+        const { left, specLeft } = cov;
+        const specLeftSum = Object.values(specLeft).reduce((s, n) => s + Math.max(0, n), 0);
+        const roleNeeds = ROLES.map((role) => (left[role] || 0) - (role === DOC_ROLE ? specLeftSum : 0));
+        const roleLeftSum = roleNeeds.reduce((s, n) => s + Math.max(0, n), 0);
+        const anyLeft = Math.max(0, left[ANY] || 0);
+        if (specLeftSum + roleLeftSum + anyLeft <= 0) {
+          day++; // день уже повністю закритий (вручну або раніше) — не чіпаємо
+          continue;
         }
+        // блок для заповнення прогалини: не довший за тривалість зміни й не заходить у дні з іншим
+        // «профілем нестачі» (там уже щось інакше закрито вручну чи раніше — не наїжджаємо на це)
+        const sig = JSON.stringify(cov);
+        let blockEnd = Math.min(toDay, day + tour - 1);
+        for (let d = day + 1; d <= blockEnd; d++) {
+          if (JSON.stringify(leftFor(post, d)) !== sig) { blockEnd = d - 1; break; }
+        }
+        Object.entries(specLeft).forEach(([spec, n]) => {
+          for (let k = n; k > 0; k--) {
+            if (!pickForRange(post, day, blockEnd, DOC_ROLE, spec)) unfilled += blockEnd - day + 1;
+          }
+        });
+        ROLES.forEach((role, i) => {
+          for (let k = roleNeeds[i]; k > 0; k--) {
+            if (!pickForRange(post, day, blockEnd, role, null)) unfilled += blockEnd - day + 1;
+          }
+        });
+        for (let k = anyLeft; k > 0; k--) {
+          if (!pickForRange(post, day, blockEnd, null, null)) unfilled += blockEnd - day + 1;
+        }
+        day = blockEnd + 1;
       }
     });
 
