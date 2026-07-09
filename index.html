@@ -19,6 +19,8 @@ const { useState, useEffect, useMemo, useRef } = React;
 /* ───────── Довідники ───────── */
 
 const ROLES = ["Управління", "Лікар", "Фельдшер", "Медсестра/брат", "Статист", "Аптека", "Водій", "Санітар", "Кухар", "Інше"];
+const DOC_ROLE = "Лікар";
+const SPECIALTIES = ["Хірург", "Травматолог", "Терапевт", "Анестезіолог", "Стоматолог", "Інше"];
 
 const ANY = "any"; // місце без вимоги до категорії
 
@@ -34,9 +36,9 @@ const WD = ["Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const MONTHS = ["Січень","Лютий","Березень","Квітень","Травень","Червень","Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"];
 
 const DEMO_PEOPLE = [
-  { name: "Коваленко О.В.", rank: "майор м/с",  role: "Лікар",          posts: ["stab","travma","stac"] },
-  { name: "Шевченко І.М.",  rank: "капітан м/с", role: "Лікар",          posts: ["amb","stac"] },
-  { name: "Бондаренко Т.С.",rank: "ст. лейтенант м/с", role: "Лікар",   posts: ["travma","stab"] },
+  { name: "Коваленко О.В.", rank: "майор м/с",  role: "Лікар", specialty: "Хірург",      posts: ["stab","travma","stac"] },
+  { name: "Шевченко І.М.",  rank: "капітан м/с", role: "Лікар", specialty: "Терапевт",    posts: ["amb","stac"] },
+  { name: "Бондаренко Т.С.",rank: "ст. лейтенант м/с", role: "Лікар", specialty: "Травматолог", posts: ["travma","stab"] },
   { name: "Мельник В.П.",   rank: "ст. сержант", role: "Фельдшер",       posts: ["stab","travma","amb"] },
   { name: "Ткаченко Д.О.",  rank: "сержант",     role: "Фельдшер",       posts: ["stab","stac"] },
   { name: "Кравченко Ю.А.", rank: "солдат",      role: "Фельдшер",       posts: ["amb","travma"] },
@@ -62,21 +64,29 @@ const shiftYm = (ym, k) => { const [y, m] = ym.split("-").map(Number); const d =
 /* вимоги поста: {категорія|any: кількість}; старі дані мали лише slots */
 const normReq = (post) => (post.req && typeof post.req === "object" ? post.req : { [ANY]: post.slots || 1 });
 const totalReq = (post) => Object.values(normReq(post)).reduce((s, n) => s + (Number(n) || 0), 0);
-const reqLabel = (key) => (key === ANY ? "Будь-хто" : key);
+const reqLabel = (key, post) => {
+  if (key === ANY) return "Будь-хто";
+  if (key === DOC_ROLE && post && post.docSpecialty) return `${key} (${post.docSpecialty})`;
+  return key;
+};
 const reqText = (post) =>
-  Object.entries(normReq(post)).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${reqLabel(k)}`).join(" · ");
+  Object.entries(normReq(post)).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${reqLabel(k, post)}`).join(" · ");
+
+/* лікар підходить під вимогу поста лише якщо збігається вказана спеціальність (якщо вона задана) */
+const doctorSpecialtyOk = (post, p) =>
+  p.role !== DOC_ROLE || !post.docSpecialty || p.specialty === post.docSpecialty;
 
 /* скільки і кого бракує на посту в конкретний день */
 const evalCoverage = (post, assigned) => {
   const left = { ...normReq(post) };
   let extra = 0;
   assigned.forEach((p) => {
-    if (left[p.role] > 0) left[p.role]--;
-    else extra++; // зайві за категорією йдуть у місця «будь-хто»
+    if (left[p.role] > 0 && doctorSpecialtyOk(post, p)) left[p.role]--;
+    else extra++; // зайві за категорією (або лікар не тієї спеціальності) йдуть у місця «будь-хто»
   });
   const anyShort = Math.max(0, (left[ANY] || 0) - extra);
   const missing = [];
-  ROLES.forEach((r) => { if (left[r] > 0) missing.push(`${left[r]} ${r}`); });
+  ROLES.forEach((r) => { if (left[r] > 0) missing.push(`${left[r]} ${reqLabel(r, post)}`); });
   if (anyShort > 0) missing.push(`${anyShort} будь-хто`);
   return { have: assigned.length, need: totalReq(post), missing };
 };
@@ -223,6 +233,7 @@ function DutyRoster() {
       const cands = people
         .filter((p) => p.active !== false && p.posts.includes(post.id))
         .filter((p) => !role || p.role === role)
+        .filter((p) => role !== DOC_ROLE || doctorSpecialtyOk(post, p))
         .filter((p) => !hasDuty(sched, p.id, day))
         .filter((p) => !restConflict(sched, p.id, day, post.id))
         .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
@@ -240,7 +251,7 @@ function DutyRoster() {
       let extra = 0;
       people.forEach((p) => {
         if (sched[p.id] && sched[p.id][day] === post.id) {
-          if (left[p.role] > 0) left[p.role]--;
+          if (left[p.role] > 0 && doctorSpecialtyOk(post, p)) left[p.role]--;
           else extra++;
         }
       });
@@ -868,6 +879,15 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
             {ROLES.map((r) => <option key={r}>{r}</option>)}
           </select>
         </label>
+        {form.role === DOC_ROLE && (
+          <label className="text-xs" style={{ color: "#8a9070" }}>Спеціальність
+            <select value={form.specialty || ""} onChange={(e) => setForm({ ...form, specialty: e.target.value })}
+              className="block mt-1 px-2 py-1.5 rounded" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }}>
+              <option value="">—</option>
+              {SPECIALTIES.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </label>
+        )}
         <div className="text-xs" style={{ color: "#8a9070" }}>Допущений до постів
           <div className="flex gap-1 mt-1 flex-wrap">
             {posts.map((p) => (
@@ -907,6 +927,13 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
                   className="px-2 py-1 rounded text-sm" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }}>
                   {ROLES.map((r) => <option key={r}>{r}</option>)}
                 </select>
+                {p.role === DOC_ROLE && (
+                  <select value={p.specialty || ""} onChange={(e) => update(p.id, { specialty: e.target.value })}
+                    title="Спеціальність лікаря" className="px-2 py-1 rounded text-sm" style={{ background: "#10130e", border: "1px solid #2a2f24", color: p.specialty ? "#e8e6dd" : "#777d68" }}>
+                    <option value="">Спеціальність —</option>
+                    {SPECIALTIES.map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                )}
                 <div className="flex gap-1">
                   {posts.map((post) => (
                     <button key={post.id} onClick={() => update(p.id, { posts: togglePost(p.posts, post.id) })}
@@ -964,6 +991,8 @@ function PostsTab({ posts, setPosts }) {
         Це використовують авторозподіл і контроль покриття.
         «Добовий» — пост повного (24-год) чергування: авторозподіл і перевірка відпочинку (вкладка «Графік») враховують
         лише такі пости, щоб людина не йшла на добове чергування частіше, ніж дозволяє налаштований відпочинок.
+        Якщо в складі є «Лікар», можна вказати спеціальність — тоді на пост ставитимуться лише лікарі з такою
+        спеціальністю (позначається на вкладці «Особовий склад»); «Будь-який» знімає обмеження.
       </p>
       {posts.map((p) => {
         const req = normReq(p);
@@ -998,7 +1027,7 @@ function PostsTab({ posts, setPosts }) {
               const n = req[key] || 0;
               return (
                 <label key={key} className="text-xs flex items-center gap-1" style={{ color: n > 0 ? "#e8e6dd" : "#555c4a" }}>
-                  {reqLabel(key)}
+                  {reqLabel(key, p)}
                   <input type="number" min={0} max={9} value={n}
                     onChange={(e) => setReq(p, key, e.target.value)}
                     className="px-1 py-0.5 rounded w-11 text-center"
@@ -1012,6 +1041,31 @@ function PostsTab({ posts, setPosts }) {
               );
             })}
           </div>
+          {(req[DOC_ROLE] || 0) > 0 && (
+            <div className="w-full flex flex-wrap items-center gap-1 pt-1" style={{ borderTop: "1px solid #22271d" }}>
+              <span className="text-xs uppercase tracking-wider mr-1" style={{ color: "#8a9070" }}>Спеціальність лікаря:</span>
+              <button onClick={() => update(p.id, { docSpecialty: "" })}
+                className="px-2 py-1 rounded text-xs font-semibold"
+                style={{
+                  background: !p.docSpecialty ? p.color : "#10130e",
+                  color: !p.docSpecialty ? "#fff" : "#777d68",
+                  border: `1px solid ${!p.docSpecialty ? p.color : "#2a2f24"}`,
+                }}>
+                Будь-який
+              </button>
+              {SPECIALTIES.map((s) => (
+                <button key={s} onClick={() => update(p.id, { docSpecialty: s })}
+                  className="px-2 py-1 rounded text-xs font-semibold"
+                  style={{
+                    background: p.docSpecialty === s ? p.color : "#10130e",
+                    color: p.docSpecialty === s ? "#fff" : "#777d68",
+                    border: `1px solid ${p.docSpecialty === s ? p.color : "#2a2f24"}`,
+                  }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         );
       })}
