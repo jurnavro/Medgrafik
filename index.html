@@ -286,9 +286,25 @@ function DutyRoster() {
     const toDay = Math.min(days, fromDay + autoDaysClamped - 1);
     const sched = {};
     Object.entries(monthSched).forEach(([pid, row]) => { sched[pid] = { ...row }; });
-    const counts = {};
+    const counts = {}; // загальне навантаження людини (усі пости)
     people.forEach((p) => { counts[p.id] = Object.keys(sched[p.id] || {}).length; });
+    // навантаження людини по кожному конкретному посту — щоб ротація на цей пост не залежала
+    // від того, наскільки людина зайнята на ІНШИХ постах (інакше той, хто рідко ходить деінде,
+    // раз у раз повторно потрапляє саме на цей пост, бо його загальний лік лишається найменшим)
+    const postCounts = {};
+    posts.forEach((post) => { postCounts[post.id] = {}; });
+    people.forEach((p) => {
+      Object.values(sched[p.id] || {}).forEach((pid) => {
+        if (!postCounts[pid]) postCounts[pid] = {};
+        postCounts[pid][p.id] = (postCounts[pid][p.id] || 0) + 1;
+      });
+    });
     let unfilled = 0;
+
+    const byRotation = (post) => (a, b) =>
+      (postCounts[post.id][a.id] || 0) - (postCounts[post.id][b.id] || 0) ||
+      counts[a.id] - counts[b.id] ||
+      a.name.localeCompare(b.name, "uk");
 
     const pickFor = (post, day, role, specialty) => {
       const cands = people
@@ -297,12 +313,13 @@ function DutyRoster() {
         .filter((p) => role !== DOC_ROLE || !specialty || p.specialty === specialty)
         .filter((p) => !hasDuty(sched, p.id, day))
         .filter((p) => !restConflict(sched, p.id, day, post.id))
-        .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
+        .sort(byRotation(post));
       if (!cands.length) return false;
       const pick = cands[0];
       if (!sched[pick.id]) sched[pick.id] = {};
       sched[pick.id][day] = post.id;
       counts[pick.id]++;
+      postCounts[post.id][pick.id] = (postCounts[post.id][pick.id] || 0) + 1;
       return true;
     };
 
@@ -318,12 +335,14 @@ function DutyRoster() {
           }
           return true;
         })
-        .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
+        .sort(byRotation(post));
       if (!cands.length) return false;
       const pick = cands[0];
       if (!sched[pick.id]) sched[pick.id] = {};
+      const span = dayTo - dayFrom + 1;
       for (let d = dayFrom; d <= dayTo; d++) sched[pick.id][d] = post.id;
-      counts[pick.id] += dayTo - dayFrom + 1;
+      counts[pick.id] += span;
+      postCounts[post.id][pick.id] = (postCounts[post.id][pick.id] || 0) + span;
       return true;
     };
 
