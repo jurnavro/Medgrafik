@@ -74,7 +74,9 @@ const reqLabel = (key) => (key === ANY ? "Будь-хто" : key);
    (docSpecReq) читаються так само, як групи. */
 const normDocGroups = (post) => {
   if (Array.isArray(post.docGroups)) {
-    return post.docGroups.filter((g) => g && Array.isArray(g.specialties) && g.specialties.length && g.count > 0);
+    // навіть щойно додана порожня вимога (без обраних спеціальностей чи з кількістю 0) має лишатись
+    // видимою в редакторі — інакше вона зникає одразу після натискання «Додати»
+    return post.docGroups.filter((g) => g && Array.isArray(g.specialties));
   }
   if (post.docSpecReq && typeof post.docSpecReq === "object") {
     return Object.entries(post.docSpecReq).filter(([, n]) => n > 0).map(([spec, n]) => ({ specialties: [spec], count: n }));
@@ -90,7 +92,9 @@ const reqText = (post) => {
   const parts = [];
   Object.entries(req).filter(([, n]) => n > 0).forEach(([k, n]) => {
     if (k === DOC_ROLE) {
-      groups.forEach((g) => { if (g.count > 0) parts.push(`${g.count} Лікар (${g.specialties.join("/")})`); });
+      groups.forEach((g) => {
+        if (g.count > 0) parts.push(g.specialties.length ? `${g.count} Лікар (${g.specialties.join("/")})` : `${g.count} Лікар`);
+      });
       const rest = n - groupsSum;
       if (rest > 0) parts.push(`${rest} Лікар`);
     } else {
@@ -142,7 +146,9 @@ const evalCoverage = (post, assigned) => {
   const { left, groups } = computeCoverage(post, assigned);
   const groupsSum = groups.reduce((s, g) => s + Math.max(0, g.remaining), 0);
   const missing = [];
-  groups.forEach((g) => { if (g.remaining > 0) missing.push(`${g.remaining} Лікар (${g.specialties.join("/")})`); });
+  groups.forEach((g) => {
+    if (g.remaining > 0) missing.push(g.specialties.length ? `${g.remaining} Лікар (${g.specialties.join("/")})` : `${g.remaining} Лікар`);
+  });
   ROLES.forEach((r) => {
     if (r === DOC_ROLE) {
       const rest = left[DOC_ROLE] - groupsSum;
