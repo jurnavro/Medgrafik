@@ -19,6 +19,8 @@ const { useState, useEffect, useMemo, useRef } = React;
 /* ───────── Довідники ───────── */
 
 const ROLES = ["Управління", "Лікар", "Фельдшер", "Медсестра/брат", "Статист", "Аптека", "Водій", "Санітар", "Кухар", "Інше"];
+const DOC_ROLE = "Лікар";
+const SPECIALTIES = ["Хірург", "Травматолог", "Терапевт", "Анестезіолог", "Стоматолог", "Інше"];
 
 const ANY = "any"; // місце без вимоги до категорії
 
@@ -34,9 +36,9 @@ const WD = ["Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 const MONTHS = ["Січень","Лютий","Березень","Квітень","Травень","Червень","Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"];
 
 const DEMO_PEOPLE = [
-  { name: "Коваленко О.В.", rank: "майор м/с",  role: "Лікар",          posts: ["stab","travma","stac"] },
-  { name: "Шевченко І.М.",  rank: "капітан м/с", role: "Лікар",          posts: ["amb","stac"] },
-  { name: "Бондаренко Т.С.",rank: "ст. лейтенант м/с", role: "Лікар",   posts: ["travma","stab"] },
+  { name: "Коваленко О.В.", rank: "майор м/с",  role: "Лікар", specialty: "Хірург",      posts: ["stab","travma","stac"] },
+  { name: "Шевченко І.М.",  rank: "капітан м/с", role: "Лікар", specialty: "Терапевт",    posts: ["amb","stac"] },
+  { name: "Бондаренко Т.С.",rank: "ст. лейтенант м/с", role: "Лікар", specialty: "Травматолог", posts: ["travma","stab"] },
   { name: "Мельник В.П.",   rank: "ст. сержант", role: "Фельдшер",       posts: ["stab","travma","amb"] },
   { name: "Ткаченко Д.О.",  rank: "сержант",     role: "Фельдшер",       posts: ["stab","stac"] },
   { name: "Кравченко Ю.А.", rank: "солдат",      role: "Фельдшер",       posts: ["amb","travma"] },
@@ -62,21 +64,29 @@ const shiftYm = (ym, k) => { const [y, m] = ym.split("-").map(Number); const d =
 /* вимоги поста: {категорія|any: кількість}; старі дані мали лише slots */
 const normReq = (post) => (post.req && typeof post.req === "object" ? post.req : { [ANY]: post.slots || 1 });
 const totalReq = (post) => Object.values(normReq(post)).reduce((s, n) => s + (Number(n) || 0), 0);
-const reqLabel = (key) => (key === ANY ? "Будь-хто" : key);
+const reqLabel = (key, post) => {
+  if (key === ANY) return "Будь-хто";
+  if (key === DOC_ROLE && post && post.docSpecialty) return `${key} (${post.docSpecialty})`;
+  return key;
+};
 const reqText = (post) =>
-  Object.entries(normReq(post)).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${reqLabel(k)}`).join(" · ");
+  Object.entries(normReq(post)).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${reqLabel(k, post)}`).join(" · ");
+
+/* лікар підходить під вимогу поста лише якщо збігається вказана спеціальність (якщо вона задана) */
+const doctorSpecialtyOk = (post, p) =>
+  p.role !== DOC_ROLE || !post.docSpecialty || p.specialty === post.docSpecialty;
 
 /* скільки і кого бракує на посту в конкретний день */
 const evalCoverage = (post, assigned) => {
   const left = { ...normReq(post) };
   let extra = 0;
   assigned.forEach((p) => {
-    if (left[p.role] > 0) left[p.role]--;
-    else extra++; // зайві за категорією йдуть у місця «будь-хто»
+    if (left[p.role] > 0 && doctorSpecialtyOk(post, p)) left[p.role]--;
+    else extra++; // зайві за категорією (або лікар не тієї спеціальності) йдуть у місця «будь-хто»
   });
   const anyShort = Math.max(0, (left[ANY] || 0) - extra);
   const missing = [];
-  ROLES.forEach((r) => { if (left[r] > 0) missing.push(`${left[r]} ${r}`); });
+  ROLES.forEach((r) => { if (left[r] > 0) missing.push(`${left[r]} ${reqLabel(r, post)}`); });
   if (anyShort > 0) missing.push(`${anyShort} будь-хто`);
   return { have: assigned.length, need: totalReq(post), missing };
 };
@@ -169,9 +179,24 @@ function DutyRoster() {
     });
   };
 
+  /* призначає/знімає весь блок днів «зміни» посту одразу (напр. цілий тиждень), починаючи з клітинки, по якій клікнули */
+  const setCellRange = (personId, dayFrom, dayTo, postId) => {
+    setSchedule((prev) => {
+      const m = { ...(prev[ym] || {}) };
+      const row = { ...(m[personId] || {}) };
+      let allSame = true;
+      for (let d = dayFrom; d <= dayTo; d++) if (row[d] !== postId) { allSame = false; break; }
+      for (let d = dayFrom; d <= dayTo; d++) { if (allSame) delete row[d]; else row[d] = postId; }
+      m[personId] = row;
+      return { ...prev, [ym]: m };
+    });
+  };
+
   const cellClick = (personId, day) => {
-    if (tool === "erase") setCell(personId, day, null);
-    else setCell(personId, day, tool);
+    if (tool === "erase") { setCell(personId, day, null); return; }
+    const tour = Math.max(1, Number(postById[tool]?.tourDays) || 1);
+    if (tour <= 1) { setCell(personId, day, tool); return; }
+    setCellRange(personId, day, Math.min(days, day + tour - 1), tool);
   };
 
   /* ── перевірки ── */
@@ -223,6 +248,7 @@ function DutyRoster() {
       const cands = people
         .filter((p) => p.active !== false && p.posts.includes(post.id))
         .filter((p) => !role || p.role === role)
+        .filter((p) => role !== DOC_ROLE || doctorSpecialtyOk(post, p))
         .filter((p) => !hasDuty(sched, p.id, day))
         .filter((p) => !restConflict(sched, p.id, day, post.id))
         .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
@@ -234,13 +260,34 @@ function DutyRoster() {
       return true;
     };
 
+    /* та сама людина закриває весь блок днів «зміни» посту (напр. цілий тиждень) */
+    const pickForRange = (post, dayFrom, dayTo, role) => {
+      const cands = people
+        .filter((p) => p.active !== false && p.posts.includes(post.id))
+        .filter((p) => !role || p.role === role)
+        .filter((p) => role !== DOC_ROLE || doctorSpecialtyOk(post, p))
+        .filter((p) => {
+          for (let d = dayFrom; d <= dayTo; d++) {
+            if (hasDuty(sched, p.id, d) || restConflict(sched, p.id, d, post.id)) return false;
+          }
+          return true;
+        })
+        .sort((a, b) => counts[a.id] - counts[b.id] || a.name.localeCompare(b.name, "uk"));
+      if (!cands.length) return false;
+      const pick = cands[0];
+      if (!sched[pick.id]) sched[pick.id] = {};
+      for (let d = dayFrom; d <= dayTo; d++) sched[pick.id][d] = post.id;
+      counts[pick.id] += dayTo - dayFrom + 1;
+      return true;
+    };
+
     // скільки ще треба з урахуванням уже проставленого
     const leftFor = (post, day) => {
       const left = { ...normReq(post) };
       let extra = 0;
       people.forEach((p) => {
         if (sched[p.id] && sched[p.id][day] === post.id) {
-          if (left[p.role] > 0) left[p.role]--;
+          if (left[p.role] > 0 && doctorSpecialtyOk(post, p)) left[p.role]--;
           else extra++;
         }
       });
@@ -248,8 +295,29 @@ function DutyRoster() {
       return left;
     };
 
+    const tourOf = (post) => Math.max(1, Number(post.tourDays) || 1);
+    const dayByDayPosts = posts.filter((post) => tourOf(post) === 1);
+    const tourPosts = posts.filter((post) => tourOf(post) > 1);
+
+    // пости з багатоденною зміною: одна людина/команда закриває весь блок днів одразу
+    tourPosts.forEach((post) => {
+      const tour = tourOf(post);
+      for (let blockStart = fromDay; blockStart <= toDay; blockStart += tour) {
+        const blockEnd = Math.min(toDay, blockStart + tour - 1);
+        const need = { ...normReq(post) };
+        ROLES.forEach((role) => {
+          for (let k = need[role] || 0; k > 0; k--) {
+            if (!pickForRange(post, blockStart, blockEnd, role)) unfilled += blockEnd - blockStart + 1;
+          }
+        });
+        for (let k = need[ANY] || 0; k > 0; k--) {
+          if (!pickForRange(post, blockStart, blockEnd, null)) unfilled += blockEnd - blockStart + 1;
+        }
+      }
+    });
+
     // пас 1: місця з вимогою категорії — фахівці дефіцитніші, їх ставимо першими
-    posts.forEach((post) => {
+    dayByDayPosts.forEach((post) => {
       for (let day = fromDay; day <= toDay; day++) {
         const left = leftFor(post, day);
         ROLES.forEach((role) => {
@@ -258,7 +326,7 @@ function DutyRoster() {
       }
     });
     // пас 2: місця «будь-хто»
-    posts.forEach((post) => {
+    dayByDayPosts.forEach((post) => {
       for (let day = fromDay; day <= toDay; day++) {
         const left = leftFor(post, day);
         for (let k = left[ANY]; k > 0; k--) if (!pickFor(post, day, null)) unfilled++;
@@ -556,10 +624,10 @@ function DutyRoster() {
               <button onClick={() => setYm(shiftYm(ym, 1))} className="px-2 py-1 rounded" style={{ background: "#1d2218" }}>›</button>
             </div>
           </div>
-          <nav className="flex gap-1">
+          <nav className="flex flex-wrap gap-1">
             {[["grid", "Графік"], ["people", "Особовий склад"], ["posts", "Пости"], ["summary", "Підсумки"]].map(([id, label]) => (
               <button key={id} onClick={() => setTab(id)}
-                className="px-3 py-2 rounded-lg text-sm font-medium"
+                className="px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap"
                 style={tab === id ? { background: "#e8e6dd", color: "#10130e" } : { background: "#1d2218", color: "#c9c7ba" }}>
                 {label}
               </button>
@@ -578,7 +646,7 @@ function DutyRoster() {
         ) : tab === "posts" ? (
           <PostsTab {...{ posts, setPosts }} />
         ) : (
-          <SummaryTab {...{ people, posts, monthSched, coverage, days, dutyCount, ym }} />
+          <SummaryTab {...{ people, posts, monthSched, dutyCount }} />
         )}
       </main>
 
@@ -606,6 +674,10 @@ function ImportButton({ onFile, label, className, style }) {
 }
 
 function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick, restConflict, coverage, dutyCount, autoFill, clearMonth, exportCsv, exportExcel, postById, isToday, loadDemo, restDays, setRestDays, colorPrint, setColorPrint, autoFrom, setAutoFrom, autoDays, setAutoDays, filterDay, setFilterDay, exportData, importData }) {
+  /* другорядні налаштування (авторозподіл, фільтри, експорт) — на вузькому екрані (телефон) згорнуті за
+     замовчуванням, на ширшому одразу розгорнуті, бо там достатньо місця */
+  const [toolsOpen, setToolsOpen] = useState(() => typeof window !== "undefined" && window.innerWidth >= 768);
+
   if (!people.length) {
     return (
       <div className="text-center py-16">
@@ -631,18 +703,19 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
       <div className="print-only" style={{ marginBottom: "6px" }}>
         <div style={{ fontWeight: 700, fontSize: "14pt" }}>Графік чергувань — {MONTHS[pm - 1]} {py}</div>
       </div>
-      {/* Панель інструментів */}
-      <div className="flex flex-wrap items-center gap-2 mb-3 no-print">
+      {/* Панель інструментів: вибір поста — завжди на видноті */}
+      <div className="flex flex-wrap items-center gap-2 mb-2 no-print">
         <span className="text-xs uppercase tracking-wider mr-1" style={{ color: "#8a9070" }}>Постав на:</span>
         {posts.map((p) => (
           <button key={p.id} onClick={() => setTool(p.id)}
+            title={(p.tourDays || 1) > 1 ? `Зміна триває ${p.tourDays} дн. — клік заповнює весь період` : undefined}
             className="px-3 py-1.5 rounded-lg text-sm font-semibold"
             style={{
               background: tool === p.id ? p.color : "#1d2218",
               color: tool === p.id ? "#fff" : "#c9c7ba",
               border: `1px solid ${p.color}`,
             }}>
-            {p.short} · {p.name}
+            {p.short} · {p.name}{(p.tourDays || 1) > 1 ? ` · ${p.tourDays}д` : ""}
           </button>
         ))}
         <button onClick={() => setTool("erase")}
@@ -650,56 +723,67 @@ function GridTab({ people, posts, monthSched, days, ym, tool, setTool, cellClick
           style={{ background: tool === "erase" ? "#e8e6dd" : "#1d2218", color: tool === "erase" ? "#10130e" : "#c9c7ba", border: "1px solid #555" }}>
           ✕ Стерти
         </button>
-        <div className="grow" />
-        <label className="text-xs flex items-center gap-1" title="Мінімум днів між нарядами на добові (24-год) пости — налаштовується на вкладці «Пости»" style={{ color: "#8a9070" }}>
-          Відпочинок між нарядами:
-          <select value={restDays} onChange={(e) => setRestDays(Number(e.target.value))}
-            className="rounded px-1 py-0.5" style={{ background: "#1d2218", color: "#e8e6dd" }}>
-            {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n} дн.</option>)}
-          </select>
-        </label>
-        <label className="text-xs flex items-center gap-1" title="Сховати тих, хто не в наряді у це число" style={{ color: "#8a9070" }}>
-          Хто в наряді:
-          <select value={filterDay ?? ""} onChange={(e) => setFilterDay(e.target.value ? Number(e.target.value) : null)}
-            className="rounded px-1 py-0.5" style={{ background: "#1d2218", color: "#e8e6dd" }}>
-            <option value="">Всі</option>
-            {Array.from({ length: days }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d} число</option>)}
-          </select>
-        </label>
-        <label className="text-xs flex items-center gap-1" title="Діапазон днів для «Авторозподіл» і «Очистити»" style={{ color: "#8a9070" }}>
-          Діапазон днів — з числа:
-          <input type="number" min={1} max={days} value={autoFrom}
-            onChange={(e) => setAutoFrom(Math.min(days, Math.max(1, Number(e.target.value) || 1)))}
-            className="rounded px-1 py-0.5 text-center" style={{ width: "3rem", background: "#1d2218", color: "#e8e6dd" }} />
-          на
-          <input type="number" min={1} max={days} value={autoDays}
-            onChange={(e) => setAutoDays(Math.min(days, Math.max(1, Number(e.target.value) || 1)))}
-            className="rounded px-1 py-0.5 text-center" style={{ width: "3.2rem", background: "#1d2218", color: "#e8e6dd" }} />
-          дн.
-        </label>
-        <button onClick={autoFill} className="px-3 py-1.5 rounded-lg text-sm font-semibold" style={{ background: "#4a6b2f", color: "#fff" }}>
-          ⚙ Авторозподіл
-        </button>
-        <button onClick={exportCsv} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>CSV</button>
-        <button onClick={exportExcel} title="Кольоровий, відформатований файл .xlsx — вигляд як у програмі"
-          className="px-3 py-1.5 rounded-lg text-sm font-semibold" style={{ background: "#217346", color: "#fff" }}>⊞ Excel</button>
-        <label className="text-xs flex items-center gap-1" title="Зберегти кольори постів на роздрукованій таблиці замість чорно-білого варіанту" style={{ color: "#8a9070" }}>
-          <input type="checkbox" checked={colorPrint} onChange={(e) => setColorPrint(e.target.checked)} />
-          Кольоровий друк
-        </label>
-        <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>Друк</button>
-        <button onClick={exportData} title="Зберегти всі дані у файл — для передачі чи резервної копії"
-          className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>⤒ Зберегти дані</button>
-        <ImportButton onFile={importData} label="⤓ Завантажити дані"
-          className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }} />
-        <button onClick={clearMonth} title="Очищає той самий діапазон днів, що й авторозподіл"
-          className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218", color: "#d08a7a" }}>
-          {autoFrom === 1 && autoFrom + autoDays - 1 >= days ? "Очистити" : `Очистити з ${autoFrom}`}
-        </button>
       </div>
 
+      {/* Решта налаштувань, авторозподіл і експорт — на телефоні згорнуто, на ширшому екрані видно завжди */}
+      <button onClick={() => setToolsOpen((v) => !v)}
+        className="no-print mb-2 inline-block px-3 py-1.5 rounded-lg text-sm font-semibold"
+        style={{ background: "#1d2218", color: "#c9c7ba", border: "1px solid #2a2f24" }}>
+        {toolsOpen ? "▾" : "▸"} Ще налаштування, авторозподіл, друк і дані
+      </button>
+      {toolsOpen && (
+        <div className="flex flex-wrap items-center gap-2 mb-3 no-print">
+          <label className="text-xs flex items-center gap-1" title="Мінімум днів між нарядами на добові (24-год) пости — налаштовується на вкладці «Пости»" style={{ color: "#8a9070" }}>
+            Відпочинок між нарядами:
+            <select value={restDays} onChange={(e) => setRestDays(Number(e.target.value))}
+              className="rounded px-1 py-1" style={{ background: "#1d2218", color: "#e8e6dd" }}>
+              {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n} дн.</option>)}
+            </select>
+          </label>
+          <label className="text-xs flex items-center gap-1" title="Сховати тих, хто не в наряді у це число" style={{ color: "#8a9070" }}>
+            Хто в наряді:
+            <select value={filterDay ?? ""} onChange={(e) => setFilterDay(e.target.value ? Number(e.target.value) : null)}
+              className="rounded px-1 py-1" style={{ background: "#1d2218", color: "#e8e6dd" }}>
+              <option value="">Всі</option>
+              {Array.from({ length: days }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d} число</option>)}
+            </select>
+          </label>
+          <label className="text-xs flex items-center gap-1" title="Діапазон днів для «Авторозподіл» і «Очистити»" style={{ color: "#8a9070" }}>
+            Діапазон днів — з числа:
+            <input type="number" min={1} max={days} value={autoFrom}
+              onChange={(e) => setAutoFrom(Math.min(days, Math.max(1, Number(e.target.value) || 1)))}
+              className="rounded px-1 py-1 text-center" style={{ width: "3.4rem", background: "#1d2218", color: "#e8e6dd" }} />
+            на
+            <input type="number" min={1} max={days} value={autoDays}
+              onChange={(e) => setAutoDays(Math.min(days, Math.max(1, Number(e.target.value) || 1)))}
+              className="rounded px-1 py-1 text-center" style={{ width: "3.6rem", background: "#1d2218", color: "#e8e6dd" }} />
+            дн.
+          </label>
+          <button onClick={autoFill} className="px-3 py-1.5 rounded-lg text-sm font-semibold" style={{ background: "#4a6b2f", color: "#fff" }}>
+            ⚙ Авторозподіл
+          </button>
+          <button onClick={exportCsv} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>CSV</button>
+          <button onClick={exportExcel} title="Кольоровий, відформатований файл .xlsx — вигляд як у програмі"
+            className="px-3 py-1.5 rounded-lg text-sm font-semibold" style={{ background: "#217346", color: "#fff" }}>⊞ Excel</button>
+          <label className="text-xs flex items-center gap-1" title="Зберегти кольори постів на роздрукованій таблиці замість чорно-білого варіанту" style={{ color: "#8a9070" }}>
+            <input type="checkbox" checked={colorPrint} onChange={(e) => setColorPrint(e.target.checked)} />
+            Кольоровий друк
+          </label>
+          <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>Друк</button>
+          <button onClick={exportData} title="Зберегти всі дані у файл — для передачі чи резервної копії"
+            className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }}>⤒ Зберегти дані</button>
+          <ImportButton onFile={importData} label="⤓ Завантажити дані"
+            className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218" }} />
+          <button onClick={clearMonth} title="Очищає той самий діапазон днів, що й авторозподіл"
+            className="px-3 py-1.5 rounded-lg text-sm" style={{ background: "#1d2218", color: "#d08a7a" }}>
+            {autoFrom === 1 && autoFrom + autoDays - 1 >= days ? "Очистити" : `Очистити з ${autoFrom}`}
+          </button>
+        </div>
+      )}
+
       <p className="text-xs mb-2 no-print" style={{ color: "#8a9070" }}>
-        Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Помаранчева рамка — порушено відпочинок між нарядами на добовий пост.
+        Обери пост зверху і клацай по клітинках. Повторний клік — зняти. Для постів зі «зміною» довшою за день клік одразу заповнює весь її період.
+        Помаранчева рамка — порушено відпочинок між нарядами на добовий пост.
         {filterDay && <span> Показано лише тих, хто в наряді {filterDay} числа — <button onClick={() => setFilterDay(null)} className="underline" style={{ color: "#c9c7ba" }}>показати всіх</button>.</span>}
       </p>
 
@@ -868,6 +952,15 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
             {ROLES.map((r) => <option key={r}>{r}</option>)}
           </select>
         </label>
+        {form.role === DOC_ROLE && (
+          <label className="text-xs" style={{ color: "#8a9070" }}>Спеціальність
+            <select value={form.specialty || ""} onChange={(e) => setForm({ ...form, specialty: e.target.value })}
+              className="block mt-1 px-2 py-1.5 rounded" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }}>
+              <option value="">—</option>
+              {SPECIALTIES.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </label>
+        )}
         <div className="text-xs" style={{ color: "#8a9070" }}>Допущений до постів
           <div className="flex gap-1 mt-1 flex-wrap">
             {posts.map((p) => (
@@ -907,6 +1000,13 @@ function PeopleTab({ people, setPeople, posts, loadDemo }) {
                   className="px-2 py-1 rounded text-sm" style={{ background: "#10130e", border: "1px solid #2a2f24", color: "#e8e6dd" }}>
                   {ROLES.map((r) => <option key={r}>{r}</option>)}
                 </select>
+                {p.role === DOC_ROLE && (
+                  <select value={p.specialty || ""} onChange={(e) => update(p.id, { specialty: e.target.value })}
+                    title="Спеціальність лікаря" className="px-2 py-1 rounded text-sm" style={{ background: "#10130e", border: "1px solid #2a2f24", color: p.specialty ? "#e8e6dd" : "#777d68" }}>
+                    <option value="">Спеціальність —</option>
+                    {SPECIALTIES.map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                )}
                 <div className="flex gap-1">
                   {posts.map((post) => (
                     <button key={post.id} onClick={() => update(p.id, { posts: togglePost(p.posts, post.id) })}
@@ -964,6 +1064,10 @@ function PostsTab({ posts, setPosts }) {
         Це використовують авторозподіл і контроль покриття.
         «Добовий» — пост повного (24-год) чергування: авторозподіл і перевірка відпочинку (вкладка «Графік») враховують
         лише такі пости, щоб людина не йшла на добове чергування частіше, ніж дозволяє налаштований відпочинок.
+        Якщо в складі є «Лікар», можна вказати спеціальність — тоді на пост ставитимуться лише лікарі з такою
+        спеціальністю (позначається на вкладці «Особовий склад»); «Будь-який» знімає обмеження.
+        «Зміна, дн.» — на скільки днів поспіль ставиться одна й та сама людина, перш ніж заміна (наприклад, тиждень
+        чи два тижні); авторозподіл і клік на клітинці графіка заповнюють увесь цей період одразу.
       </p>
       {posts.map((p) => {
         const req = normReq(p);
@@ -989,6 +1093,33 @@ function PostsTab({ posts, setPosts }) {
             <input type="checkbox" checked={p.daily !== false} onChange={(e) => update(p.id, { daily: e.target.checked })} />
             Добовий
           </label>
+          <label className="text-xs flex items-center gap-1"
+            title="Скільки днів поспіль на посту одна й та сама людина, перш ніж заміна. 1 — змінюються щодня."
+            style={{ color: (p.tourDays || 1) > 1 ? "#e8e6dd" : "#8a9070" }}>
+            Зміна, дн.
+            <input type="number" min={1} max={60} value={p.tourDays || 1}
+              onChange={(e) => update(p.id, { tourDays: Math.max(1, Math.min(60, Number(e.target.value) || 1)) })}
+              className="px-1 py-0.5 rounded w-12 text-center"
+              style={{
+                background: "#10130e",
+                border: `1px solid ${(p.tourDays || 1) > 1 ? p.color : "#2a2f24"}`,
+                color: (p.tourDays || 1) > 1 ? "#e8e6dd" : "#555c4a",
+                fontWeight: (p.tourDays || 1) > 1 ? 700 : 400,
+              }} />
+          </label>
+          <div className="flex gap-1">
+            {[["Щодня", 1], ["Тиждень", 7], ["2 тижні", 14]].map(([label, n]) => (
+              <button key={label} onClick={() => update(p.id, { tourDays: n })}
+                className="px-2 py-1 rounded text-xs font-semibold"
+                style={{
+                  background: (p.tourDays || 1) === n ? p.color : "#10130e",
+                  color: (p.tourDays || 1) === n ? "#fff" : "#777d68",
+                  border: `1px solid ${(p.tourDays || 1) === n ? p.color : "#2a2f24"}`,
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="grow" />
           <span className="text-xs font-semibold" style={{ color: "#c9c7ba" }}>Разом: {totalReq(p)}</span>
           <button onClick={() => remove(p.id)} className="px-2 py-1 rounded text-xs" style={{ background: "#1d2218", color: "#d08a7a" }}>✕</button>
@@ -998,7 +1129,7 @@ function PostsTab({ posts, setPosts }) {
               const n = req[key] || 0;
               return (
                 <label key={key} className="text-xs flex items-center gap-1" style={{ color: n > 0 ? "#e8e6dd" : "#555c4a" }}>
-                  {reqLabel(key)}
+                  {reqLabel(key, p)}
                   <input type="number" min={0} max={9} value={n}
                     onChange={(e) => setReq(p, key, e.target.value)}
                     className="px-1 py-0.5 rounded w-11 text-center"
@@ -1012,6 +1143,31 @@ function PostsTab({ posts, setPosts }) {
               );
             })}
           </div>
+          {(req[DOC_ROLE] || 0) > 0 && (
+            <div className="w-full flex flex-wrap items-center gap-1 pt-1" style={{ borderTop: "1px solid #22271d" }}>
+              <span className="text-xs uppercase tracking-wider mr-1" style={{ color: "#8a9070" }}>Спеціальність лікаря:</span>
+              <button onClick={() => update(p.id, { docSpecialty: "" })}
+                className="px-2 py-1 rounded text-xs font-semibold"
+                style={{
+                  background: !p.docSpecialty ? p.color : "#10130e",
+                  color: !p.docSpecialty ? "#fff" : "#777d68",
+                  border: `1px solid ${!p.docSpecialty ? p.color : "#2a2f24"}`,
+                }}>
+                Будь-який
+              </button>
+              {SPECIALTIES.map((s) => (
+                <button key={s} onClick={() => update(p.id, { docSpecialty: s })}
+                  className="px-2 py-1 rounded text-xs font-semibold"
+                  style={{
+                    background: p.docSpecialty === s ? p.color : "#10130e",
+                    color: p.docSpecialty === s ? "#fff" : "#777d68",
+                    border: `1px solid ${p.docSpecialty === s ? p.color : "#2a2f24"}`,
+                  }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         );
       })}
@@ -1022,21 +1178,12 @@ function PostsTab({ posts, setPosts }) {
 
 /* ───────── Вкладка: Підсумки ───────── */
 
-function SummaryTab({ people, posts, monthSched, coverage, days, dutyCount, ym }) {
+function SummaryTab({ people, posts, monthSched, dutyCount }) {
   const byPost = (personId) => {
     const res = {};
     Object.values(monthSched[personId] || {}).forEach((pid) => { res[pid] = (res[pid] || 0) + 1; });
     return res;
   };
-
-  const gaps = posts.map((post) => {
-    const bad = [];
-    for (let d = 1; d <= days; d++) {
-      const c = coverage[post.id]?.[d];
-      if (c && c.missing.length) bad.push({ d, missing: c.missing });
-    }
-    return { post, bad };
-  }).filter((g) => g.bad.length);
 
   const active = people.filter((p) => p.active !== false);
   const counts = active.map((p) => dutyCount(p.id));
@@ -1044,22 +1191,6 @@ function SummaryTab({ people, posts, monthSched, coverage, days, dutyCount, ym }
 
   return (
     <div className="max-w-3xl">
-      {/* Незакриті зміни */}
-      <h2 className="font-bold mb-2">Незакриті зміни</h2>
-      {!gaps.length ? (
-        <p className="text-sm mb-5" style={{ color: "#7fa86a" }}>✓ Усі пости закриті щодня.</p>
-      ) : (
-        <div className="mb-5">
-          {gaps.map(({ post, bad }) => (
-            <div key={post.id} className="px-3 py-2 rounded-lg mb-1 text-sm" style={{ background: "#3a1c14", border: "1px solid #5a2c20" }}>
-              <span className="font-semibold" style={{ color: "#ff9a7c" }}>{post.name}</span>
-              <span style={{ color: "#c9a08f" }}> ({reqText(post)})</span> — не вистачає:{" "}
-              {bad.map(({ d, missing }) => `${d} число (${missing.join(", ")})`).join("; ")}
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Навантаження */}
       <h2 className="font-bold mb-2">Навантаження за місяць</h2>
       <div className="rounded-lg p-3" style={{ background: "#171b13", border: "1px solid #2a2f24" }}>
